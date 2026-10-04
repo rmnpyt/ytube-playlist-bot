@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Formatting
+        run: python -m ruff format --check bot tests
+
+      - name: Lint
+        run: python -m ruff check bot tests
+
+      - name: Types
+        run: python -m mypy
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # The 85% floor lives in pyproject, so a run that drops below it fails here
+      # without needing a separate check step that could drift from the config.
+      - name: Run the suite
+        run: python -m pytest tests --cov-report=xml --cov-report=term
+
+      - name: Archive the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 14
+
+  container:
+    name: Container images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the bot image
+        run: docker build -f docker/Dockerfile -t ytube-playlist-bot:ci .
+
+      # The compose file is a contract too: a typo in a variable name should fail
+      # here rather than on the VPS during a deploy.
+      - name: Validate the compose file
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+      - name: The Bot API image must exist and be pullable
+        run: docker pull aiogram/telegram-bot-api:10.3
+
+      # Proves the image starts, runs unprivileged and exits non-zero when the
+      # environment is incomplete, using nothing but fake credentials.
+      - name: The entrypoint reports a missing configuration
+        run: |
+          set +e
+          output=$(docker run --rm ytube-playlist-bot:ci 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          test "$status" -eq 2
+          echo "$output" | grep -q TELEGRAM_BOT_TOKEN
