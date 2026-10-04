@@ -1,0 +1,32 @@
+"""The reply keyboard the bot greets people with.
+
+The layout is fixed by the contract: single video and playlist on top, help below, and
+an admin button that only an admin sees. Building it here rather than inline in a
+handler means the menu cannot drift between the places it is shown.
+"""
+
+from __future__ import annotations
+
+from telegram import KeyboardButton, ReplyKeyboardMarkup
+
+SINGLE_VIDEO_LABEL = "🎬 Single video"
+PLAYLIST_LABEL = "📀 Playlist"
+HELP_LABEL = "❓ Help"
+ADMIN_LABEL = "⚙️ Admin"
+
+# Telegram sends whatever the user taps as a message, so these labels double as the
+# routing the handlers match on. They must therefore stay in sync with
+# bot.handlers, which is why they live in one place.
+REPLY_LABELS = (SINGLE_VIDEO_LABEL, PLAYLIST_LABEL, HELP_LABEL, ADMIN_LABEL)
+
+
+def main_menu_keyboard(*, is_admin: bool) -> ReplyKeyboardMarkup:
+    top = [KeyboardButton(SINGLE_VIDEO_LABEL), KeyboardButton(PLAYLIST_LABEL)]
+    bottom = [KeyboardButton(HELP_LABEL)]
+    if is_admin:
+        bottom.append(KeyboardButton(ADMIN_LABEL))
+
+    # Help keeps its own row either way. Letting Admin join it is what makes the admin
+    # menu square; without Admin the row is one button wide, which Telegram renders
+    # happily and which keeps the Help entry point present for everybody.
+    return ReplyKeyboardMarkup([top, bottom], resize_keyboard=True)
