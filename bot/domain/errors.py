@@ -66,5 +66,9 @@ class RateLimitedError(BotError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class DownloadCancelledError(BotError):
+    """The user cancelled, or the job was abandoned. Not a fault."""
+
+
 class DownloadFailedError(InternalError):
     """yt-dlp or ffmpeg failed. The detail is for the log, not the chat."""

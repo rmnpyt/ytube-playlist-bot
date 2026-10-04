@@ -48,6 +48,14 @@ class VideoMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class VideoDescription:
+    """Everything a handler needs to render the quality menu for one video."""
+
+    metadata: VideoMetadata
+    menu: QualityMenu
+
+
+@dataclass(frozen=True, slots=True)
 class QualityMenu:
     """Offered options, plus the ones deliberately withheld and why.
 

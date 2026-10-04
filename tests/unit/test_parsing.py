@@ -45,6 +45,15 @@ def test_extra_query_parameters_are_ignored() -> None:
     assert parse_link(url).video_id == VIDEO_ID
 
 
+def test_a_valid_video_id_wins_over_a_playlist_it_travels_with() -> None:
+    # Someone who taps "single video" and pastes their address bar means the video,
+    # not the playlist residue in the URL. Only a list decides the outcome when there
+    # is no usable video id.
+    assert parse_link(f"https://www.youtube.com/watch?v={VIDEO_ID}&list=PLabc123").video_id == (
+        VIDEO_ID
+    )
+
+
 def test_surrounding_whitespace_and_punctuation_are_tolerated() -> None:
     assert parse_link(f"  {VIDEO_ID}\n").video_id == VIDEO_ID
 

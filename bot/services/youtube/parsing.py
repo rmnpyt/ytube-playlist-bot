@@ -104,8 +104,11 @@ def _from_youtube_url(parsed: object) -> ParsedLink | None:
     path = getattr(parsed, "path", "") or ""
     segments = [segment for segment in path.split("/") if segment]
 
-    # A list parameter can ride along with a watch URL, and the playlist is what the
-    # user means when both are present.
+    # A list parameter can ride along with a watch URL. A valid video id still wins:
+    # the bot has a separate playlist button, and someone who taps "single video" and
+    # pastes their address bar means the video, not whatever playlist residue the URL
+    # carries. A list only decides the outcome when there is no usable video id, which
+    # covers /playlist?list=... and watch?v=<not-an-id>&list=...
     playlist_id = query.get("list", [None])[0]
     video_id = query.get("v", [None])[0]
 
