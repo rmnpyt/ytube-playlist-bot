@@ -7,10 +7,12 @@ secrets, and never exceeding what the Telegram Bot API server can accept.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
-from bot.config import Settings
+from bot.config import ConfigurationError, Settings
 
 REQUIRED = {
     "TELEGRAM_BOT_TOKEN": "123456789:AAF-fake-token-for-tests",
@@ -52,17 +54,46 @@ def test_missing_required_variable_fails_fast(
     assert missing.lower() in str(excinfo.value).lower()
 
 
-def test_error_message_names_the_environment_variable(
+def test_startup_error_names_the_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TELEGRAM_API_ID", "424242")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
     monkeypatch.setenv("ADMIN_USER_IDS", "7")
 
-    with pytest.raises(ValidationError) as excinfo:
-        Settings()
+    with pytest.raises(ConfigurationError) as excinfo:
+        Settings.from_env()
 
     assert "TELEGRAM_BOT_TOKEN" in str(excinfo.value)
+
+
+def test_startup_error_reports_every_problem_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAX_UPLOAD_MB", "4000")
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        Settings.from_env()
+
+    message = str(excinfo.value)
+    assert "TELEGRAM_BOT_TOKEN" in message
+    assert "TELEGRAM_API_ID" in message
+    assert "MAX_UPLOAD_MB" in message
+
+
+def test_startup_error_keeps_the_original_failure_as_the_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ConfigurationError) as excinfo:
+        Settings.from_env()
+
+    assert isinstance(excinfo.value.__cause__, ValidationError)
+
+
+def test_from_env_returns_settings_when_the_environment_is_valid(
+    minimal_env: dict[str, str],
+) -> None:
+    assert Settings.from_env().max_upload_mb == 2000
 
 
 def test_non_numeric_api_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,11 +228,23 @@ def test_non_numeric_user_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_admin_is_implicitly_allowed(settings: Settings) -> None:
-    assert settings.is_allowed(settings.admin_user_ids.copy().pop()) is True
+    assert settings.is_allowed(next(iter(settings.admin_user_ids))) is True
 
 
 def test_unknown_user_is_not_allowed(settings: Settings) -> None:
     assert settings.is_allowed(999_999) is False
+
+
+def test_explicitly_allowed_user_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _valid_env(ALLOWED_USER_IDS="1234").items():
+        monkeypatch.setenv(key, value)
+
+    assert Settings().is_allowed(1234) is True
+
+
+def test_admin_detection(settings: Settings) -> None:
+    assert settings.is_admin(next(iter(settings.admin_user_ids))) is True
+    assert settings.is_admin(1234) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -210,9 +253,7 @@ def test_unknown_user_is_not_allowed(settings: Settings) -> None:
 
 
 @pytest.mark.parametrize("url", ["telegram-bot-api:8081/bot", "ftp://host/bot"])
-def test_bot_api_url_must_be_absolute_http(
-    monkeypatch: pytest.MonkeyPatch, url: str
-) -> None:
+def test_bot_api_url_must_be_absolute_http(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
     for key, value in _valid_env(TELEGRAM_BOT_API_URL=url).items():
         monkeypatch.setenv(key, value)
 
@@ -251,12 +292,20 @@ def test_download_dir_must_be_absolute(monkeypatch: pytest.MonkeyPatch) -> None:
         Settings()
 
 
-def test_download_dir_is_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", "/home/bot")
-    for key, value in _valid_env(DOWNLOAD_DIR="/home/bot/dl/").items():
+@pytest.mark.parametrize("path", ["/data/downloads", "/home/bot/dl/", "C:\\data\\dl"])
+def test_rooted_download_dir_is_accepted(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    """The container path is POSIX while development happens on Windows."""
+    for key, value in _valid_env(DOWNLOAD_DIR=path).items():
         monkeypatch.setenv(key, value)
 
-    assert Settings().download_dir.is_absolute()
+    assert Settings().download_dir == Path(path)
+
+
+def test_download_dir_is_normalised(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in _valid_env(DOWNLOAD_DIR="/data/downloads/").items():
+        monkeypatch.setenv(key, value)
+
+    assert str(Settings().download_dir) == str(Path("/data/downloads"))
 
 
 # --------------------------------------------------------------------------- #
@@ -305,9 +354,7 @@ def test_orphan_ttl_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
         Settings()
 
 
-def test_settings_load_from_a_dotenv_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
-) -> None:
+def test_settings_load_from_a_dotenv_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
         "\n".join(f"{key}={value}" for key, value in REQUIRED.items()),

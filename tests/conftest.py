@@ -15,9 +15,7 @@ _SETTING_ENV_KEYS = frozenset(name.upper() for name in Settings.model_fields)
 
 
 @pytest.fixture(autouse=True)
-def isolate_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[Path]:
+def isolate_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     """Run every test in a clean, empty working directory.
 
     Settings reads both the process environment and a ``.env`` file in the current
