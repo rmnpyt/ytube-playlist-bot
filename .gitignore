@@ -1,0 +1,52 @@
+# Local secrets. Only .env.example is committed.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Runtime data: SQLite database, downloads, YouTube cookies
+data/
+downloads/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+cookies.txt
+
+# Local TLS certificates for webhook experiments
+certs/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

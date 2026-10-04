@@ -1,0 +1,1 @@
+"""yt-dlp adapter: metadata, format discovery, downloading and cookie handling."""
