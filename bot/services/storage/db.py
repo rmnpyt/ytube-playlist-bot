@@ -53,6 +53,15 @@ class Database:
     def engine(self) -> AsyncEngine:
         return self._engine
 
+    @property
+    def sessions(self) -> async_sessionmaker[AsyncSession]:
+        """The session factory, for callers that manage their own transactions.
+
+        ``session_scope`` is the better default; this exists for services that need to
+        own the boundary themselves.
+        """
+        return self._sessions
+
     @contextlib.asynccontextmanager
     async def session_scope(self) -> AsyncIterator[AsyncSession]:
         """One transaction: commit on the way out, roll back on any exception."""
