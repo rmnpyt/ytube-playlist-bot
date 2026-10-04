@@ -1,0 +1,90 @@
+# ytube-playlist-bot
+#
+#   cp .env.example .env      # fill in the required values
+#   docker compose up -d
+#
+# The Telegram Bot API server is deliberately NOT published to the host. Under
+# long polling the bot reaches it over the internal network, and nothing else needs
+# to. Publishing it would add a plaintext HTTP surface for no benefit.
+
+name: ytube-playlist-bot
+
+services:
+  # ------------------------------------------------------------------------- #
+  # Local Telegram Bot API server
+  #
+  # The cloud API caps bot uploads at 50 MB. This server runs in --local mode,
+  # which allows 2000 MB, and that is the whole reason this service exists.
+  # ------------------------------------------------------------------------- #
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:10.3
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_STAT: "1"
+      TELEGRAM_HTTP_IP_ADDRESS: "0.0.0.0"
+    volumes:
+      - bot-api-data:/var/lib/telegram-bot-api
+    networks:
+      - bot-net
+    # No healthcheck: the upstream image ships no HTTP client to probe with, and
+    # inventing one would need a build of our own. The bot retries the connection
+    # on startup, so an API server that is still warming up is not a problem.
+    stop_grace_period: 30s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ------------------------------------------------------------------------- #
+  # The bot
+  # ------------------------------------------------------------------------- #
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ghcr.io/rmnpyt/ytube-playlist-bot:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      telegram-bot-api:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      DOWNLOAD_DIR: /data/downloads
+      DATABASE_URL: sqlite+aiosqlite:////data/bot.db
+    volumes:
+      - bot-data:/data
+    networks:
+      - bot-net
+    # Loopback only. Prometheus or curl on the VPS can reach /metrics and
+    # /healthz; the internet cannot. Put a Traefik router in front of this when
+    # you want a dashboard, and terminate TLS there as you already do elsewhere.
+    ports:
+      - "127.0.0.1:9090:9090"
+    # The bot only ever writes to /data, so the rest of the filesystem can be
+    # read-only. ffmpeg and yt-dlp use the tmpfs for scratch space.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Long enough for an in-flight upload to finish rather than being cut off.
+    stop_grace_period: 30s
+    logging: *logging
+
+networks:
+  bot-net:
+    driver: bridge
+
+volumes:
+  # Downloads and the SQLite database.
+  bot-data:
+  # Bot API server state. Never delete this while the bot is running: it holds the
+  # bot session, and deleting it makes Telegram forget the local server.
+  bot-api-data:
