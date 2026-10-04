@@ -37,3 +37,7 @@ answer messages.
 
 - The `pytube` downloader, which no longer downloads from YouTube. Downloads go
   through `yt-dlp`.
+
+### Notes
+
+- The project is released under the MIT licence.

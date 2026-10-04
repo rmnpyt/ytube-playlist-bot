@@ -99,3 +99,12 @@ need it.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Module map and the reasoning behind it |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | Day-to-day operation and what to do when it breaks |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+
+---
+
+## License
+
+[MIT](LICENSE). That covers redistribution of this code only; it does not address
+YouTube's Terms of Service or the rights to the videos a user downloads, which are
+separate questions.
+
