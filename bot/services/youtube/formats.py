@@ -1,0 +1,131 @@
+"""Turning yt-dlp's format list into something a person can choose from.
+
+yt-dlp returns a flat list of dicts with keys missing in many combinations. All of
+that variability is absorbed here, so a handler receives a ``QualityMenu`` and never
+inspects a format dict.
+
+The filtering order is deliberate. Progressive and mp4 first, because a video-only
+stream has no sound and calling it 1080p is a lie. Then one option per height, keeping
+the largest, because YouTube offers several bitrates per height and a menu of
+near-identical buttons is not a choice. Then size: known, and under the ceiling.
+
+Note that this function raises rather than returning an empty menu. There is no
+version of "nothing to offer" that should render an empty keyboard, so each distinct
+cause becomes its own error the handler can explain.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Final
+
+from bot.domain.errors import AllOptionsTooLargeError, NoDownloadableOptionsError
+from bot.domain.models import QualityMenu, QualityOption, RemovalReason
+
+NO_PROGRESSIVE_MESSAGE: Final = (
+    "YouTube offered no video and audio together for this video, "
+    "and there is nothing that can be sent as a single file."
+)
+
+NO_KNOWN_SIZES_MESSAGE: Final = (
+    "YouTube did not report the size of any usable quality for this video, so the "
+    "bot cannot tell whether it would fit the upload limit. It is hiding them "
+    "rather than offering a file that might be rejected after a full download."
+)
+
+
+def _size_of(entry: dict[str, Any]) -> int | None:
+    """Prefer the exact size; the approximation is a fallback, never a winner."""
+    for key in ("filesize", "filesize_approx"):
+        value = entry.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def _is_progressive_mp4(entry: dict[str, Any]) -> bool:
+    if entry.get("vcodec") == "none" or entry.get("acodec") == "none":
+        return False
+    return entry.get("ext") == "mp4"
+
+
+def _by_height(formats: list[dict[str, Any]], *, sized: bool) -> list[QualityOption]:
+    """Progressive mp4 options, best per height, best first.
+
+    ``sized`` selects between formats whose size YouTube reported and those where it
+    did not. They are handled separately because an unsized format cannot be checked
+    against the upload ceiling at all.
+    """
+    best: dict[int, QualityOption] = {}
+
+    for entry in formats:
+        if not _is_progressive_mp4(entry):
+            continue
+        height = entry.get("height")
+        if not isinstance(height, int) or height <= 0:
+            continue
+
+        size = _size_of(entry)
+        if (size is not None) is not sized:
+            continue
+
+        option = QualityOption(
+            format_id=str(entry["format_id"]),
+            height=height,
+            size_bytes=size or 0,
+        )
+        current = best.get(height)
+        if current is None or option.size_bytes > current.size_bytes:
+            best[height] = option
+
+    return sorted(best.values(), key=lambda option: option.height, reverse=True)
+
+
+def build_quality_menu(
+    formats: list[dict[str, Any]],
+    *,
+    limit_bytes: int,
+    allow_unknown_sizes: bool = False,
+) -> QualityMenu:
+    """Filter formats down to what can actually be delivered.
+
+    Raises:
+        NoDownloadableOptionsError: nothing suitable exists, or every candidate has
+            an unknown size while unknown sizes are disabled.
+        AllOptionsTooLargeError: usable formats exist but every one exceeds the limit.
+    """
+    sized = _by_height(formats, sized=True)
+    unsized = _by_height(formats, sized=False)
+
+    offered = [option for option in sized if option.size_bytes <= limit_bytes]
+    removed: list[QualityMenu.Removed] = [
+        QualityMenu.Removed(option=option, reason=RemovalReason.TOO_LARGE)
+        for option in sized
+        if option.size_bytes > limit_bytes
+    ]
+
+    if allow_unknown_sizes:
+        # The user asked for these, and accepts the risk that one turns out too big.
+        offered = [*offered, *unsized]
+    else:
+        removed += [
+            QualityMenu.Removed(
+                option=option,
+                reason=RemovalReason.UNKNOWN_SIZE,
+                known_size=False,
+            )
+            for option in unsized
+        ]
+
+    if offered:
+        return QualityMenu(options=tuple(offered), removed=tuple(removed), limit_bytes=limit_bytes)
+
+    if sized:
+        raise AllOptionsTooLargeError(
+            largest_bytes=max(option.size_bytes for option in sized),
+            limit_bytes=limit_bytes,
+        )
+
+    if unsized:
+        raise NoDownloadableOptionsError(NO_KNOWN_SIZES_MESSAGE)
+
+    raise NoDownloadableOptionsError(NO_PROGRESSIVE_MESSAGE)
