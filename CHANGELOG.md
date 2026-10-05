@@ -26,6 +26,9 @@ answer messages.
 - Continuous integration covering formatting, linting, type checking, the test
   suite and the container build, plus Dependabot for Python, Actions and Docker.
 - Developer entry points in a `Makefile`.
+- Janitor that removes downloads left behind by a hard kill, on
+  `JANITOR_INTERVAL_SECONDS` and once before the bot starts serving, so a
+  container restart cannot leak files until the disk fills.
 
 ### Changed
 

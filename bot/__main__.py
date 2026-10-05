@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from bot.app import build_application
 from bot.config import ConfigurationError, Settings
 from bot.logging_setup import configure_logging, get_logger
+from bot.services.janitor import Janitor
 from bot.services.storage.db import Database
 from bot.services.storage.migrations import apply_migrations
 
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     from telegram.ext import Updater
 
     from bot.container import BotApplication
+    from bot.services.janitor import Sweeper
 
     #: What ``_poll`` does, named so a test can hand ``serve`` something else.
     Poll = Callable[[BotApplication], Awaitable[None]]
@@ -70,20 +73,60 @@ async def _poll(application: BotApplication) -> None:
         await application.shutdown()
 
 
-async def serve(settings: Settings, *, poll: Poll = _poll) -> None:
+async def serve(
+    settings: Settings,
+    *,
+    poll: Poll = _poll,
+    janitor: Sweeper | None = None,
+) -> None:
     """Own every resource for as long as the bot runs.
 
     The database is closed on the way out whether polling ended on its own or raised,
     because the restart that follows a bad token or an unreachable server is the case
-    that leaks one.
+    that leaks one. The janitor is stopped there too, since it is a task of its own that
+    would otherwise outlive the process it belongs to.
     """
     database = Database(settings.database_url)
+    sweeper = janitor if janitor is not None else build_janitor(settings)
+    janitor_task: asyncio.Task[None] | None = None
     try:
         await apply_migrations(settings.database_url)
         application = build_application(settings, database)
+        # Before polling, so the space a previous process left behind is reclaimed before
+        # anything is measured against it, and before a user is answered. A sweep that fails
+        # is logged and stepped over: a full disk is bad, a bot that will not start because
+        # of it is worse, and the operator needs the bot up to fix the disk.
+        try:
+            await sweeper.sweep()
+        except Exception:
+            get_logger(LOGGER_NAME).warning("startup sweep failed", exc_info=True)
+        janitor_task = asyncio.create_task(sweeper.run(), name="janitor")
         await poll(application)
     finally:
+        if janitor_task is not None:
+            await _stop(janitor_task)
         await database.dispose()
+
+
+def build_janitor(settings: Settings) -> Janitor:
+    """The janitor this deployment asked for, pointed at its download directory."""
+    return Janitor(
+        settings.download_dir,
+        ttl_seconds=float(settings.orphan_ttl_seconds),
+        interval_seconds=float(settings.janitor_interval_seconds),
+    )
+
+
+async def _stop(task: asyncio.Task[None]) -> None:
+    """Cancel a background task and wait for it to actually finish.
+
+    Cancelling is a request, not an outcome. Awaiting the task is what makes the janitor's
+    own cleanup happen before the process exits, and what turns "the task is still
+    running" into nothing at all rather than a warning from the event loop on the way down.
+    """
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def main(argv: Sequence[str] | None = None, *, run: Run = run_bot) -> int:

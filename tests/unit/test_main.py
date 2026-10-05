@@ -29,6 +29,7 @@ from bot.__main__ import (
 )
 from bot.config import Settings
 from bot.container import SERVICES_KEY, Services
+from bot.services.janitor import Janitor, SweepResult
 from bot.services.storage.db import Database
 
 if TYPE_CHECKING:
@@ -205,6 +206,153 @@ async def test_serving_closes_the_database_after_a_clean_stop(
     await serve(settings, poll=poll)
 
     assert closed == [True]
+
+
+class RecordingJanitor:
+    """A janitor that records what it was asked to do and then idles."""
+
+    def __init__(self) -> None:
+        self.swept = 0
+        self.runs = 0
+        self.stopped = 0
+
+    async def sweep(self) -> SweepResult:
+        self.swept += 1
+        return SweepResult(removed=0, freed_bytes=0)
+
+    async def run(self) -> None:
+        self.runs += 1
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.stopped += 1
+
+
+async def test_serving_sweeps_the_download_directory_before_it_answers_anybody(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A restart after a hard kill leaves files behind, and the first thing this process does
+    # with that directory is clean it. Sweeping after polling starts would let the first
+    # download be measured against space the sweep was about to give back.
+    settings = pointed_at(monkeypatch, tmp_path)
+    janitor = RecordingJanitor()
+    events: list[str] = []
+
+    async def poll(_application: object) -> None:
+        events.append("polled")
+
+    original_sweep = janitor.sweep
+
+    async def record_sweep() -> SweepResult:
+        events.append("swept")
+        return await original_sweep()
+
+    janitor.sweep = record_sweep  # type: ignore[method-assign]
+
+    await serve(settings, poll=poll, janitor=janitor)
+
+    assert events == ["swept", "polled"]
+
+
+async def test_serving_keeps_sweeping_while_the_bot_runs(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # One pass is not a janitor. Without a task behind it, files that appear later are only
+    # collected by the next restart.
+    settings = pointed_at(monkeypatch, tmp_path)
+    janitor = RecordingJanitor()
+
+    async def poll(_application: object) -> None:
+        # One yield, because a task that has not been given the loop yet has not started.
+        # A bot serves for hours, so the periodic sweep is running long before this returns.
+        await asyncio.sleep(0)
+        assert janitor.runs == 1, "the periodic sweep was not running while the bot served"
+
+    await serve(settings, poll=poll, janitor=janitor)
+
+
+async def test_serving_stops_the_janitor_when_polling_fails(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Polling raises on a bad token or an unreachable server, and the process is on its way
+    # out. A janitor task left running past that is a task the event loop will complain about
+    # on its way down, holding the download directory open.
+    settings = pointed_at(monkeypatch, tmp_path)
+    janitor = RecordingJanitor()
+
+    async def refuse(_application: object) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("cannot reach the Bot API server")
+
+    with pytest.raises(RuntimeError, match="Bot API"):
+        await serve(settings, poll=refuse, janitor=janitor)
+
+    assert janitor.stopped == 1
+
+
+async def test_serving_stops_the_janitor_after_a_clean_stop(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = pointed_at(monkeypatch, tmp_path)
+    janitor = RecordingJanitor()
+
+    async def poll(_application: object) -> None:
+        await asyncio.sleep(0)
+
+    await serve(settings, poll=poll, janitor=janitor)
+
+    assert janitor.stopped == 1
+
+
+async def test_the_janitor_is_built_from_the_configured_settings(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A janitor pointed at the wrong directory is worse than none: it would report a clean
+    # bill of health while the real directory fills up.
+    pointed_at(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORPHAN_TTL_SECONDS", "120")
+    monkeypatch.setenv("JANITOR_INTERVAL_SECONDS", "300")
+    configured = Settings()
+    built: list[Janitor] = []
+    original = main_module.build_janitor
+
+    def record(given: Settings) -> Janitor:
+        janitor = original(given)
+        built.append(janitor)
+        return janitor
+
+    monkeypatch.setattr(main_module, "build_janitor", record)
+
+    async def poll(_application: object) -> None:
+        return None
+
+    await serve(configured, poll=poll)
+
+    assert built, "no janitor was built"
+    assert built[0].directory == configured.download_dir
+    assert built[0].ttl_seconds == 120
+    assert built[0].interval_seconds == 300
+
+
+async def test_a_startup_sweep_that_explodes_does_not_stop_the_bot_from_serving(
+    minimal_env: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A janitor problem is a housekeeping problem. Refusing to start over one would turn a
+    # full disk into a bot that cannot answer anybody, which is worse than the full disk.
+    settings = pointed_at(monkeypatch, tmp_path)
+
+    class Refusing(RecordingJanitor):
+        async def sweep(self) -> SweepResult:
+            raise PermissionError("the download directory is not writable")
+
+    polled: list[object] = []
+
+    async def poll(_application: object) -> None:
+        polled.append(True)
+
+    await serve(settings, poll=poll, janitor=Refusing())
+
+    assert polled, "the bot never polled"
 
 
 class FakeUpdater:
