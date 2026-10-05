@@ -35,6 +35,15 @@ MB = 1_000_000
 VIDEO_ID = "dQw4w9WgXcQ"
 
 
+async def leftovers(directory: Path) -> list[Path]:
+    """Everything still in a directory, read off the event loop.
+
+    These are async tests, and listing a directory blocks. The point of the assertion is
+    that nothing survived cleanup, so the reading has to happen somewhere else.
+    """
+    return await asyncio.to_thread(lambda: sorted(directory.iterdir()))
+
+
 def test_the_adapter_satisfies_the_protocol_handlers_will_depend_on(
     settings: Settings, tmp_path: Path
 ) -> None:
@@ -102,6 +111,7 @@ class FakeYDL:
         download_error: Exception | None = None,
         target: str = "/data/downloads/video.mp4",
         no_file: bool = False,
+        partial: str | None = None,
     ) -> None:
         self.params = params
         self._extract_result = extract_result
@@ -109,6 +119,7 @@ class FakeYDL:
         self._download_error = download_error
         self._target = target
         self._no_file = no_file
+        self._partial = partial
         self.extract_calls: list[tuple[str, bool]] = []
         self.download_calls: list[list[str]] = []
         FakeYDL.instances.append(self)
@@ -121,13 +132,18 @@ class FakeYDL:
 
     def extract_info(self, url: str, download: bool = True) -> dict[str, Any]:
         self.extract_calls.append((url, download))
-        if download and self._download_error is not None:
-            # A real yt-dlp failure surfaces from extract_info when download=True.
-            raise self._download_error
         if self._extract_error is not None:
             raise self._extract_error
         assert self._extract_result is not None
         if download:
+            if self._partial is not None:
+                # Real yt-dlp writes here first and renames the finished transfer onto
+                # the real name, so an abandoned download leaves this behind.
+                Path(self._partial).write_bytes(b"partial")
+            if self._download_error is not None:
+                # A transfer that breaks part-way through, which is when a real one
+                # breaks: after the partial file exists, not before it is opened.
+                raise self._download_error
             for percent in (50, 100):
                 self._fire_hook(
                     percent=percent,
@@ -168,6 +184,7 @@ def make_service(
     download_error: Exception | None = None,
     target: str | None = None,
     no_file: bool = False,
+    partial: str | None = None,
 ) -> YtDlpService:
     def factory(params: dict[str, Any]) -> FakeYDL:
         return FakeYDL(
@@ -177,6 +194,7 @@ def make_service(
             download_error=download_error,
             target=target or str(tmp_path / "video.mp4"),
             no_file=no_file,
+            partial=partial,
         )
 
     return YtDlpService(settings, ydl_factory=factory)
@@ -367,6 +385,78 @@ async def test_a_download_failure_is_wrapped(settings: Settings, tmp_path: Path)
         await service.download_video(
             "https://youtu.be/dQw4w9WgXcQ", "22", cancelled=asyncio.Event()
         )
+
+
+async def test_a_cancel_leaves_no_partial_file_on_disk(
+    minimal_env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The contract calls this out by name: cancelling mid-download removes the partial
+    # file. Without the download directory pointed at tmp_path there is nothing to look
+    # at, so the cleanup would be a silent no-op.
+    monkeypatch.setenv("DOWNLOAD_DIR", str(tmp_path))
+    partial = tmp_path / f"{VIDEO_ID}.mp4.part"
+    service = make_service(Settings(), tmp_path, partial=str(partial))
+    cancelled = asyncio.Event()
+
+    async def on_progress(_progress: Any) -> None:
+        cancelled.set()
+
+    with pytest.raises(DownloadCancelledError):
+        await service.download_video(
+            "https://youtu.be/dQw4w9WgXcQ",
+            "22",
+            on_progress=on_progress,
+            cancelled=cancelled,
+        )
+
+    assert not partial.exists()
+    assert await leftovers(tmp_path) == []
+
+
+async def test_a_failed_download_leaves_no_partial_file_on_disk(
+    minimal_env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The same invariant, reached through a different door: a failed transfer, not a
+    # cancelled one. Both must clean up, because "the job ended" covers either reason.
+    monkeypatch.setenv("DOWNLOAD_DIR", str(tmp_path))
+    partial = tmp_path / f"{VIDEO_ID}.mp4.part"
+    service = make_service(
+        Settings(),
+        tmp_path,
+        download_error=DownloadError("fragment 3 not found"),
+        partial=str(partial),
+    )
+
+    with pytest.raises(DownloadFailedError):
+        await service.download_video(
+            "https://youtu.be/dQw4w9WgXcQ", "22", cancelled=asyncio.Event()
+        )
+
+    assert not partial.exists()
+    assert await leftovers(tmp_path) == []
+
+
+async def test_cleanup_of_one_download_cannot_touch_another_video_s_files(
+    minimal_env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Matched by video id, not by "everything in the directory", so two chats
+    # downloading different videos cannot delete each other's in-flight file.
+    monkeypatch.setenv("DOWNLOAD_DIR", str(tmp_path))
+    other = tmp_path / "AAAAAAAAAAA.mp4.part"
+    other.write_bytes(b"someone else")
+    service = make_service(
+        Settings(),
+        tmp_path,
+        download_error=DownloadError("fragment 3 not found"),
+        partial=str(tmp_path / f"{VIDEO_ID}.mp4.part"),
+    )
+
+    with pytest.raises(DownloadFailedError):
+        await service.download_video(
+            "https://youtu.be/dQw4w9WgXcQ", "22", cancelled=asyncio.Event()
+        )
+
+    assert other.exists()
 
 
 async def test_a_download_that_produced_no_file_is_a_failure(

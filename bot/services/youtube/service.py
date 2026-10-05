@@ -23,6 +23,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
 from bot.domain.errors import (
+    BotError,
     DownloadCancelledError,
     DownloadFailedError,
     VideoUnavailableError,
@@ -30,6 +31,7 @@ from bot.domain.errors import (
 from bot.domain.models import DownloadProgress, VideoDescription, VideoMetadata
 from bot.logging_setup import Logger, get_logger
 from bot.services.youtube.formats import build_quality_menu
+from bot.services.youtube.parsing import parse_link
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -136,6 +138,16 @@ class YtDlpService:
 
         try:
             info = await asyncio.to_thread(self._extract, url, download=True, options=options)
+        except BaseException:
+            # yt-dlp leaves a .part file behind whenever it stops early, and a
+            # half-written video is exactly what the contract forbids on disk. The
+            # output template names files after the video id, so this download's
+            # leftovers can be found without guessing at extensions.
+            #
+            # BaseException, not Exception: if the whole task is cancelled the partial
+            # file still has to go, and that is the case that used to leak.
+            await asyncio.to_thread(self._discard_leftovers, url)
+            raise
         finally:
             # Drain the last progress callbacks before returning, so the final
             # "complete" update cannot arrive after the caller has moved on. The
@@ -192,6 +204,23 @@ class YtDlpService:
 
     # -- Options ----------------------------------------------------------- #
 
+    def _discard_leftovers(self, url: str) -> None:
+        """Delete whatever this video's aborted download left on disk."""
+        video_id = _video_id_of(url)
+        if video_id is None:
+            # A URL we cannot read an id from gives us nothing safe to match on, and
+            # deleting broadly would risk another download's file.
+            return
+        for leftover in self._settings.download_dir.glob(f"{video_id}.*"):
+            self._remove(leftover)
+
+    def _remove(self, path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # Cleanup failing must not replace the error the user needs to hear about.
+            self._log.warning("youtube.download.cleanup_failed", path=str(path))
+
     def _base_options(self) -> dict[str, Any]:
         return {
             "quiet": True,
@@ -231,6 +260,14 @@ class _StructlogLogger:
 
     def error(self, message: str) -> None:
         self._log.error("youtube.ydl.error", detail=message)
+
+
+def _video_id_of(url: str) -> str | None:
+    """The id a download's files will be named after, or None when we cannot tell."""
+    try:
+        return parse_link(url).video_id
+    except BotError:
+        return None
 
 
 def _translate_ytdlp_error(exc: Exception) -> Exception:
