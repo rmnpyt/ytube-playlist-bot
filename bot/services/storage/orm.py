@@ -70,3 +70,29 @@ class JobRow(Base):
 
     def __repr__(self) -> str:
         return f"JobRow(id={self.id!r}, chat_id={self.chat_id!r}, status={self.status!r})"
+
+
+class AccessRequestStatus:
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+
+
+class AccessRequestRow(Base):
+    """A user who asked for access, waiting for an admin decision."""
+
+    __tablename__ = "access_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AccessRequestStatus.PENDING
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"AccessRequestRow(id={self.id!r}, telegram_id={self.telegram_id!r}, status={self.status!r})"

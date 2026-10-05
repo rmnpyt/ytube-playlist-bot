@@ -13,11 +13,12 @@ SINGLE_VIDEO_LABEL = "🎬 Single video"
 PLAYLIST_LABEL = "📀 Playlist"
 HELP_LABEL = "❓ Help"
 ADMIN_LABEL = "⚙️ Admin"
+REQUEST_ACCESS_LABEL = "📝 Request access"
 
 # Telegram sends whatever the user taps as a message, so these labels double as the
 # routing the handlers match on. They must therefore stay in sync with
 # bot.handlers, which is why they live in one place.
-REPLY_LABELS = (SINGLE_VIDEO_LABEL, PLAYLIST_LABEL, HELP_LABEL, ADMIN_LABEL)
+REPLY_LABELS = (SINGLE_VIDEO_LABEL, PLAYLIST_LABEL, HELP_LABEL, ADMIN_LABEL, REQUEST_ACCESS_LABEL)
 
 
 def main_menu_keyboard(*, is_admin: bool) -> ReplyKeyboardMarkup:
@@ -30,3 +31,11 @@ def main_menu_keyboard(*, is_admin: bool) -> ReplyKeyboardMarkup:
     # menu square; without Admin the row is one button wide, which Telegram renders
     # happily and which keeps the Help entry point present for everybody.
     return ReplyKeyboardMarkup([top, bottom], resize_keyboard=True)
+
+
+def request_access_keyboard() -> ReplyKeyboardMarkup:
+    """Keyboard shown to a user who has been denied access."""
+    top = [KeyboardButton(SINGLE_VIDEO_LABEL), KeyboardButton(PLAYLIST_LABEL)]
+    middle = [KeyboardButton(HELP_LABEL)]
+    bottom = [KeyboardButton(REQUEST_ACCESS_LABEL)]
+    return ReplyKeyboardMarkup([top, middle, bottom], resize_keyboard=True)

@@ -170,7 +170,7 @@ async def test_stray_text_is_handed_back_to_the_menu(
 # -- Access ----------------------------------------------------------------- #
 
 
-async def test_a_denied_user_is_told_so_and_gets_nothing_else(
+async def test_a_denied_user_is_offered_request_access(
     application: BotApplication,
     telegram: RecordingTelegram,
     services: Services,
@@ -179,7 +179,12 @@ async def test_a_denied_user_is_told_so_and_gets_nothing_else(
 
     await send(application, denied, a_command_update("start"))
 
-    assert telegram.said == ["This bot is by invitation. Ask one of its admins for access."]
+    # The user is denied and offered to request access
+    assert "This bot is by invitation" in telegram.said[-1]
+    assert "request has been sent" in telegram.said[-1] or "already pending" in telegram.said[-1]
+    # Check that the reply keyboard was sent (reply_markup in the last call)
+    last_call = telegram.calls[-1]
+    assert "reply_markup" in last_call.data
     assert not denied.flow.expecting_link(DEFAULT_CHAT_ID)
 
 

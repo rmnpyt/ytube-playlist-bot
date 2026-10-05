@@ -49,7 +49,7 @@ from bot.domain.models import (
 from bot.domain.protocols import DiskRoom, PlaylistService
 from bot.services.disk import NO_ROOM
 from bot.services.files import FileDelivery
-from bot.services.users import Sighting, UserService
+from bot.services.users import Sighting, User, UserService
 
 if TYPE_CHECKING:
     from bot.domain.protocols import ProgressCallback
@@ -62,15 +62,65 @@ class FakeUsers(UserService):
         self.allowed = allowed
         self.send_as_video = send_as_video
         self.sightings: list[Sighting] = []
+        self._allowed_overrides: dict[int, bool] = {}
+        self._pending_requests: dict[int, bool] = {}
 
     async def record_sighting(self, sighting: Sighting) -> None:
         self.sightings.append(sighting)
 
     async def may_use(self, telegram_id: int) -> bool:
+        if telegram_id in self._allowed_overrides:
+            return self._allowed_overrides[telegram_id]
         return self.allowed
 
     async def prefers_video(self, telegram_id: int) -> bool:
         return self.send_as_video
+
+    async def request_access(self, telegram_id: int, username: str | None) -> bool:
+        # Users who are already allowed (globally or by override) cannot request access
+        if await self.may_use(telegram_id):
+            return False
+        if telegram_id in self._pending_requests:
+            return False
+        self._pending_requests[telegram_id] = True
+        return True
+
+    async def list_pending_requests(self) -> list[User]:
+        from bot.services.users import User
+
+        return [
+            User(telegram_id=tid, username=None, send_as_video=True, is_allowed=False)
+            for tid in self._pending_requests
+        ]
+
+    async def approve_request(self, telegram_id: int) -> bool:
+        if telegram_id not in self._pending_requests:
+            return False
+        self._allowed_overrides[telegram_id] = True
+        del self._pending_requests[telegram_id]
+        return True
+
+    async def deny_request(self, telegram_id: int) -> bool:
+        if telegram_id not in self._pending_requests:
+            return False
+        del self._pending_requests[telegram_id]
+        return True
+
+    async def set_allowed(self, telegram_id: int, is_allowed: bool) -> None:
+        self._allowed_overrides[telegram_id] = is_allowed
+
+    async def list_users(self) -> list[User]:
+        from bot.services.users import User
+
+        return [
+            User(
+                telegram_id=tid,
+                username=None,
+                send_as_video=True,
+                is_allowed=self._allowed_overrides.get(tid, self.allowed),
+            )
+            for tid in set(self._allowed_overrides) | set(self._pending_requests)
+        ]
 
 
 class FakeVideos:

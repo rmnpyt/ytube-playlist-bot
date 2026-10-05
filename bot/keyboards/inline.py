@@ -13,9 +13,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 if TYPE_CHECKING:
     from bot.domain.models import VideoDescription
+    from bot.services.users import User
 
 QUALITY_PREFIX = "quality:"
 CANCEL_CALLBACK = "cancel"
+ACCESS_APPROVE_PREFIX = "access_approve:"
+ACCESS_DENY_PREFIX = "access_deny:"
 
 
 def quality_keyboard(description: VideoDescription) -> InlineKeyboardMarkup:
@@ -30,6 +33,24 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("✖ Cancel", callback_data=CANCEL_CALLBACK)]],
     )
+
+
+def admin_panel_keyboard(pending: list[User]) -> InlineKeyboardMarkup:
+    """Keyboard for the admin panel showing approve/deny buttons per request."""
+    buttons = []
+    for u in pending:
+        name = f"@{u.username}" if u.username else f"ID {u.telegram_id}"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ Approve {name}", callback_data=f"{ACCESS_APPROVE_PREFIX}{u.telegram_id}"
+                ),
+                InlineKeyboardButton(
+                    f"❌ Deny {name}", callback_data=f"{ACCESS_DENY_PREFIX}{u.telegram_id}"
+                ),
+            ]
+        )
+    return InlineKeyboardMarkup(buttons)
 
 
 def quality_menu_text(description: VideoDescription) -> str:

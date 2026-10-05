@@ -16,20 +16,28 @@ from typing import TYPE_CHECKING
 from telegram.ext import CommandHandler, MessageHandler, filters
 
 from bot.container import services_from
+from bot.keyboards.inline import (
+    ACCESS_APPROVE_PREFIX,
+    ACCESS_DENY_PREFIX,
+    admin_panel_keyboard,
+)
 from bot.keyboards.reply import (
     ADMIN_LABEL,
     HELP_LABEL,
     PLAYLIST_LABEL,
+    REQUEST_ACCESS_LABEL,
     SINGLE_VIDEO_LABEL,
     main_menu_keyboard,
+    request_access_keyboard,
 )
-from bot.services.users import Sighting
+from bot.services.users import Sighting, notify_admins_of_request
 
 if TYPE_CHECKING:
     from telegram import Update
 
-    from bot.container import BotApplication, BotContext
+    from bot.container import BotApplication, BotContext, Services
     from bot.handlers import Handler
+    from bot.handlers.single import Editable, _say
 
 HELP_TEXT = (
     "Send me a YouTube link and I'll show you the qualities I can send back. "
@@ -57,7 +65,14 @@ def requires_access(handler: Handler) -> Handler:
         # knocking, and somebody who was just refused is the person most worth seeing.
         await services.users.record_sighting(Sighting(user.id, user.username))
         if not await services.users.may_use(user.id):
-            await message.reply_text(DENIED_TEXT)
+            # User is denied - offer to request access
+            created = await services.users.request_access(user.id, user.username)
+            text = DENIED_TEXT
+            if created:
+                text += "\n\nYour request has been sent to the admins. You will be notified when they decide."
+            else:
+                text += "\n\nYour request is already pending."
+            await message.reply_text(text, reply_markup=request_access_keyboard())
             return
         await handler(update, context)
 
@@ -119,7 +134,110 @@ async def on_admin(update: Update, context: BotContext) -> None:
         # and anybody can send it.
         await _menu_reply(update, context, DENIED_TEXT)
         return
-    await _menu_reply(update, context, NOT_YET_TEXT)
+    await _show_admin_panel(services, update.effective_message)
+
+
+async def on_request_access(update: Update, context: BotContext) -> None:
+    """Handle the 'Request access' button tap from a denied user."""
+    services = services_from(context)
+    user = update.effective_user
+    message = update.effective_message
+    if user is None or message is None:
+        return
+
+    created = await services.users.request_access(user.id, user.username)
+    if created:
+        # Notify admins
+        await notify_admins_of_request(
+            context.bot,
+            services.settings.admin_user_ids,
+            user.id,
+            user.username,
+        )
+        await message.reply_text(
+            "Your request has been sent to the admins. You will be notified when they decide.",
+            reply_markup=request_access_keyboard(),
+        )
+    else:
+        await message.reply_text(
+            "Your request is already pending.",
+            reply_markup=request_access_keyboard(),
+        )
+
+
+async def _show_admin_panel(
+    services: Services,
+    message: Editable | None,
+) -> None:
+    """Show the admin panel with pending access requests."""
+
+    pending = await services.users.list_pending_requests()
+    if not pending:
+        await _say(message, "No pending access requests.", keyboard=None)
+        return
+
+    text = "Pending access requests:\n\n"
+    for u in pending:
+        name = f"@{u.username}" if u.username else f"ID {u.telegram_id}"
+        text += f"• {name}\n"
+
+    await _say(message, text, keyboard=admin_panel_keyboard(pending))
+
+
+async def on_access_approve(update: Update, context: BotContext) -> None:
+    """Handle an admin approving an access request."""
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    await query.answer()
+
+    user = update.effective_user
+    services = services_from(context)
+    if user is None or not services.settings.is_admin(user.id):
+        return
+
+    telegram_id = int(query.data.removeprefix(ACCESS_APPROVE_PREFIX))
+    approved = await services.users.approve_request(telegram_id)
+    if approved:
+        # Notify the user
+        try:
+            await context.bot.send_message(
+                telegram_id,
+                "Your access request has been approved! You can now use the bot.",
+            )
+        except Exception:
+            pass
+        await _show_admin_panel(services, query.message)
+    else:
+        await query.answer("Request not found or already processed", show_alert=True)
+
+
+async def on_access_deny(update: Update, context: BotContext) -> None:
+    """Handle an admin denying an access request."""
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    await query.answer()
+
+    user = update.effective_user
+    services = services_from(context)
+    if user is None or not services.settings.is_admin(user.id):
+        return
+
+    telegram_id = int(query.data.removeprefix(ACCESS_DENY_PREFIX))
+    denied = await services.users.deny_request(telegram_id)
+    if denied:
+        # Notify the user
+        try:
+            await context.bot.send_message(
+                telegram_id,
+                "Your access request has been denied.",
+            )
+        except Exception:
+            pass
+        await _show_admin_panel(services, query.message)
+    else:
+        await query.answer("Request not found or already processed", show_alert=True)
 
 
 @requires_access
@@ -150,12 +268,19 @@ def register_menu(
         # otherwise widen the match to messages nobody tapped.
         return filters.Regex(rf"^{re.escape(label)}$")
 
+    from telegram.ext import CallbackQueryHandler
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(tapped(SINGLE_VIDEO_LABEL), on_single_video))
     application.add_handler(MessageHandler(tapped(PLAYLIST_LABEL), on_playlist))
     application.add_handler(MessageHandler(tapped(HELP_LABEL), help_command))
     application.add_handler(MessageHandler(tapped(ADMIN_LABEL), on_admin))
+    application.add_handler(MessageHandler(tapped(REQUEST_ACCESS_LABEL), on_request_access))
+    application.add_handler(
+        CallbackQueryHandler(on_access_approve, pattern=f"^{ACCESS_APPROVE_PREFIX}")
+    )
+    application.add_handler(CallbackQueryHandler(on_access_deny, pattern=f"^{ACCESS_DENY_PREFIX}"))
 
 
 def register_fallback(

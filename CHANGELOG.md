@@ -35,6 +35,9 @@ answer messages.
 - Playlist selections persisted in a `jobs` table, replayed on restart so a hard
   kill cannot leave downloads stuck. The "Playlist" button now collects links
   and qualities, queues them, and processes the queue sequentially.
+- Access control with admin approve/deny: denied users can request access,
+  admins get a notification with inline buttons, approval adds the user to the
+  allowlist in SQLite, denial removes the pending request.
 
 ### Changed
 

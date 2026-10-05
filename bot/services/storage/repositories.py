@@ -11,12 +11,25 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from bot.services.storage.orm import JobRow, JobStatus, UserRow
+from bot.services.storage.orm import (
+    AccessRequestRow,
+    AccessRequestStatus,
+    JobRow,
+    JobStatus,
+    UserRow,
+    utc_now,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-__all__ = ["JobRepository", "JobStatus", "UserRepository"]
+__all__ = [
+    "AccessRequestRepository",
+    "AccessRequestStatus",
+    "JobRepository",
+    "JobStatus",
+    "UserRepository",
+]
 
 
 class UserRepository:
@@ -62,6 +75,48 @@ class UserRepository:
             # the user, and would lose whatever a first sighting is meant to capture.
             raise LookupError(f"no record of user {telegram_id}")
         return user
+
+
+class AccessRequestRepository:
+    """Access to the ``access_requests`` table."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, telegram_id: int, username: str | None) -> AccessRequestRow:
+        request = AccessRequestRow(telegram_id=telegram_id, username=username)
+        self._session.add(request)
+        await self._session.flush()
+        return request
+
+    async def get_pending(self, telegram_id: int) -> AccessRequestRow | None:
+        result = await self._session.scalars(
+            select(AccessRequestRow).where(
+                AccessRequestRow.telegram_id == telegram_id,
+                AccessRequestRow.status == AccessRequestStatus.PENDING,
+            )
+        )
+        return result.first()
+
+    async def list_pending(self) -> list[AccessRequestRow]:
+        result = await self._session.scalars(
+            select(AccessRequestRow)
+            .where(AccessRequestRow.status == AccessRequestStatus.PENDING)
+            .order_by(AccessRequestRow.created_at)
+        )
+        return list(result)
+
+    async def approve(self, request_id: int) -> None:
+        request = await self._session.get(AccessRequestRow, request_id)
+        if request is not None:
+            request.status = AccessRequestStatus.APPROVED
+            request.resolved_at = utc_now()
+
+    async def deny(self, request_id: int) -> None:
+        request = await self._session.get(AccessRequestRow, request_id)
+        if request is not None:
+            request.status = AccessRequestStatus.DENIED
+            request.resolved_at = utc_now()
 
 
 class JobRepository:
