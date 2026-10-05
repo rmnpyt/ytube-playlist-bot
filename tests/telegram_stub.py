@@ -30,6 +30,7 @@ from telegram import (
     User,
 )
 from telegram.constants import MessageEntityType
+from telegram.error import BadRequest, TelegramError
 
 if TYPE_CHECKING:
     import pytest
@@ -140,6 +141,16 @@ class RecordingTelegram:
 
     calls: list[Call] = field(default_factory=list)
     sent: int = 0
+    refused: dict[str, TelegramError] = field(default_factory=dict)
+
+    def refuse(self, endpoint: str, error: TelegramError | None = None) -> None:
+        """Make one endpoint fail, the way Telegram fails some requests.
+
+        Needed where the bot's own recovery is the thing under test: a callback query that
+        has been answerable for too long, a sendMessage to somebody who blocked the bot. A
+        stub that always succeeds cannot show whether those cases are handled or ignored.
+        """
+        self.refused[endpoint] = error or BadRequest("Bad Request: simulated refusal")
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Take over every outbound call for the duration of a test."""
@@ -148,6 +159,8 @@ class RecordingTelegram:
     async def _post(self, endpoint: str, data: Any = None, **kwargs: Any) -> Any:
         # ``data`` is positional-optional on Bot._post; handlers always send it.
         self.calls.append(Call(endpoint=endpoint, data=dict(data or {})))
+        if endpoint in self.refused:
+            raise self.refused[endpoint]
         if endpoint == "getMe":
             # Initialising the application asks the API who the bot is. Real tests
             # still want to dispatch updates, so the question has to have an answer.
