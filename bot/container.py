@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from telegram.ext import Application, CallbackContext, ExtBot, JobQueue
 
     from bot.config import Settings
-    from bot.domain.protocols import YoutubeService
+    from bot.domain.protocols import DiskRoom, YoutubeService
     from bot.services.files import FileDelivery
     from bot.services.flow import Flow
     from bot.services.users import UserService
@@ -55,6 +55,9 @@ class Services:
     videos: YoutubeService
     delivery: FileDelivery
     flow: Flow
+    #: Last, and checked before anything is written: the disk has to have room for a
+    #: download before a download is started.
+    disk: DiskRoom
 
 
 def services_from(context: BotContext) -> Services:

@@ -24,6 +24,7 @@ from telegram.ext import ApplicationBuilder
 from bot.container import SERVICES_KEY, Services
 from bot.handlers import menu, single
 from bot.logging_setup import get_logger
+from bot.services.disk import DiskGuard
 from bot.services.files import FileDelivery
 from bot.services.flow import Flow
 from bot.services.users import UserService
@@ -91,6 +92,10 @@ def build_services(application: BotApplication, settings: Settings, database: Da
         videos=YtDlpService(settings),
         delivery=FileDelivery(application.bot),
         flow=Flow(),
+        disk=DiskGuard(
+            settings.download_dir,
+            threshold_gb=settings.disk_free_threshold_gb,
+        ),
     )
 
 

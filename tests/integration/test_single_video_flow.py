@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from tests.fakes import FakeDelivery, FakeUsers, FakeVideos, a_description, an_option
+from tests.fakes import FakeDelivery, FakeDisk, FakeUsers, FakeVideos, a_description, an_option
 from tests.telegram_stub import (
     DEFAULT_CHAT_ID,
     DEFAULT_USER_ID,
@@ -330,6 +330,66 @@ async def test_the_file_is_removed_after_it_is_sent(
     await send(application, flow, a_callback_update(f"{QUALITY_PREFIX}137"))
 
     assert flow.delivery.discarded == ["A Video.mp4"]  # type: ignore[attr-defined]
+
+
+async def test_a_full_disk_refuses_the_download_before_it_starts(
+    application: BotApplication,
+    telegram: RecordingTelegram,
+    services: Services,
+) -> None:
+    # The whole point of the guard: the transfer is never attempted. Starting it anyway
+    # and failing afterwards would leave a half-written file on the volume the guard was
+    # asked to protect.
+    flow = await offered(application, services, disk=FakeDisk(room=False))
+
+    await send(application, flow, a_callback_update(f"{QUALITY_PREFIX}137"))
+
+    assert flow.videos.downloads == []  # type: ignore[attr-defined]
+    assert telegram.endpoints.count("sendVideo") == 0
+
+
+async def test_a_full_disk_is_explained_rather_than_swallowed(
+    application: BotApplication,
+    telegram: RecordingTelegram,
+    services: Services,
+) -> None:
+    # The user is told the disk is full and to try later, in words rather than as a traceback
+    # or a bare "error": there is nothing they can fix, so the message has to say what to do.
+    flow = await offered(application, services, disk=FakeDisk(room=False))
+
+    await send(application, flow, a_callback_update(f"{QUALITY_PREFIX}137"))
+
+    said = telegram.said[-1]
+    assert "disk" in said.lower()
+    assert "later" in said.lower()
+
+
+async def test_a_refused_download_leaves_nothing_to_cancel(
+    application: BotApplication,
+    telegram: RecordingTelegram,
+    services: Services,
+) -> None:
+    # A transfer that never began must not leave a cancel button waiting on a download that
+    # is not running, or the user's next press asks to stop nothing.
+    flow = await offered(application, services, disk=FakeDisk(room=False))
+
+    await send(application, flow, a_callback_update(f"{QUALITY_PREFIX}137"))
+
+    assert not flow.flow.is_running(DEFAULT_CHAT_ID)
+
+
+async def test_a_disk_with_room_downloads_normally(
+    application: BotApplication,
+    telegram: RecordingTelegram,
+    services: Services,
+) -> None:
+    # The guard checks on every download, so it has to stay invisible when the answer is
+    # yes. A test that only covered the refusal would pass with a guard that always refuses.
+    flow = await offered(application, services, disk=FakeDisk(room=True))
+
+    await send(application, flow, a_callback_update(f"{QUALITY_PREFIX}137"))
+
+    assert flow.videos.downloads == [(URL, "137")]  # type: ignore[attr-defined]
 
 
 async def test_a_document_preference_is_honoured_end_to_end(

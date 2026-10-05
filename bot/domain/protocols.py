@@ -16,11 +16,29 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Any
 
+    from bot.domain.errors import DiskSpaceError
     from bot.domain.models import DownloadProgress, VideoDescription
 
     # A coroutine, not a bare Awaitable: the adapter hands these to
     # run_coroutine_threadsafe, which needs something the loop can wrap.
     ProgressCallback = Callable[[DownloadProgress], Coroutine[Any, Any, None]]
+
+
+@runtime_checkable
+class DiskRoom(Protocol):
+    """Whether the download directory can take one more file.
+
+    ``check`` rather than ``has_room`` at the call site, because the caller needs the reason
+    to show the user and a bare ``False`` cannot be printed.
+    """
+
+    async def check(self) -> DiskSpaceError | None:
+        """The refusal to raise, or ``None`` when there is room.
+
+        Returns rather than raises: a full disk is an expected state, not an exception, and
+        the handler decides how to say so. Never raises for a filesystem that cannot be
+        measured.
+        """
 
 
 @runtime_checkable

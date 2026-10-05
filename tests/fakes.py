@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bot.domain.errors import DownloadCancelledError
+from bot.domain.errors import DiskSpaceError, DownloadCancelledError
 from bot.domain.models import (
     DownloadProgress,
     QualityMenu,
@@ -25,6 +25,8 @@ from bot.domain.models import (
     VideoDescription,
     VideoMetadata,
 )
+from bot.domain.protocols import DiskRoom
+from bot.services.disk import NO_ROOM
 from bot.services.files import FileDelivery
 from bot.services.users import Sighting, UserService
 
@@ -133,6 +135,26 @@ class FakeDelivery(FileDelivery):
         self.discarded.append(path.name)
         await asyncio.to_thread(path.unlink, missing_ok=True)
         return True
+
+
+class FakeDisk(DiskRoom):
+    """A disk with as much room as the test says it has.
+
+    Defaults to room, because a test that is not about the disk should not have to think
+    about it, and one that is should say so by passing ``room=False``.
+    """
+
+    def __init__(self, *, room: bool = True) -> None:
+        self.room = room
+        self.asked = 0
+
+    async def check(self) -> DiskSpaceError | None:
+        self.asked += 1
+        if self.room:
+            return None
+        # The real wording, so a test that asserts on what the user is told cannot pass
+        # against a message the production guard would never send.
+        return DiskSpaceError(NO_ROOM)
 
 
 def a_description(

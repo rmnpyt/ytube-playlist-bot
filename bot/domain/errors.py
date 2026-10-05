@@ -72,5 +72,14 @@ class DownloadCancelledError(BotError):
     """The user cancelled, or the job was abandoned. Not a fault."""
 
 
+class DiskSpaceError(BotError):
+    """There is not enough room left on the disk to start another download.
+
+    A ``BotError`` and not an ``InternalError``, because this one is not a fault and the
+    user is owed the reason: nothing they did caused it, and nothing they can do about it
+    except wait. The detail belongs in the log, where an operator will find it.
+    """
+
+
 class DownloadFailedError(InternalError):
     """yt-dlp or ffmpeg failed. The detail is for the log, not the chat."""

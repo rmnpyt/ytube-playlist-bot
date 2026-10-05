@@ -156,6 +156,15 @@ async def _download(
     message: Editable | None,
 ) -> None:
     """Fetch one format, send it, and remove it whatever happens."""
+    # Checked here, before anything is started, rather than by the downloader. A refusal
+    # this late has already spent the user's wait and left a half-written file for the
+    # janitor, and there is no point cancelling a transfer that should never have begun.
+    refusal = await services.disk.check()
+    if refusal is not None:
+        logger.info("download refused for chat %s: the disk is full", pending.chat_id)
+        await _say(message, str(refusal))
+        return
+
     cancel = services.flow.begin(pending.chat_id)
     reporter = ProgressReporter(_edit_line(message))
     path = None

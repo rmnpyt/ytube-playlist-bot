@@ -29,6 +29,9 @@ answer messages.
 - Janitor that removes downloads left behind by a hard kill, on
   `JANITOR_INTERVAL_SECONDS` and once before the bot starts serving, so a
   container restart cannot leak files until the disk fills.
+- Disk guard that refuses to start a download when free space drops below
+  `DISK_FREE_THRESHOLD_GB`, checked before any transfer begins so a full disk
+  cannot leave a half-written file or a stale cancel button.
 
 ### Changed
 
