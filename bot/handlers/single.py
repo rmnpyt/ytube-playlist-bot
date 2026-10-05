@@ -32,7 +32,7 @@ from bot.services.flow import PendingVideo
 from bot.services.progress import ProgressReporter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
     from pathlib import Path
     from typing import Any
 
@@ -41,9 +41,10 @@ if TYPE_CHECKING:
     from bot.container import BotApplication, BotContext, Services
     from bot.domain.models import DownloadProgress, QualityOption
 
-    #: Something a callback query's message can be. Telegram may hand back a message
-    #: that no longer exists, which is exactly the case where an edit must be skipped.
-    Editable = MaybeInaccessibleMessage
+    #: Something a callback query's message can be. For sending replies we need a real
+    #: Message; MaybeInaccessibleMessage includes InaccessibleMessage which lacks the
+    #: methods we need. Handlers check at runtime.
+    Editable = MaybeInaccessibleMessage | None
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,11 @@ async def on_text(update: Update, context: BotContext) -> None:
     chat = update.effective_chat
     message = update.effective_message
     if chat is None or message is None:
+        return
+
+    # Playlist mode: user is building a queue of videos
+    if services.flow.expecting_playlist_link(chat.id):
+        await _handle_playlist_text(services, chat.id, message)
         return
 
     if not services.flow.expecting_link(chat.id):
@@ -88,9 +94,96 @@ async def on_text(update: Update, context: BotContext) -> None:
     )
 
 
+async def _handle_playlist_text(
+    services: Services,
+    chat: int,
+    message: Message | None,
+) -> None:
+    """Handle a link while the user is building a playlist."""
+    if message is None:
+        return
+    text = (message.text or "").strip()
+    if text.lower() == "done":
+        await _start_playlist(services, chat, message)
+        return
+
+    try:
+        description = await services.videos.describe_video(text)
+    except BotError as error:
+        await message.reply_text(str(error))
+        return
+
+    services.flow.stop_expecting_playlist_link(chat)
+    services.flow.remember(
+        PendingVideo(chat_id=chat, url=text, description=description, for_playlist=True),
+    )
+    await message.reply_text(
+        quality_menu_text(description),
+        reply_markup=quality_keyboard(description),
+    )
+
+
+async def _start_playlist(
+    services: Services,
+    chat: int,
+    message: Editable | None,
+) -> None:
+    """Begin processing the queued playlist for this chat."""
+    services.flow.stop_expecting_playlist_link(chat)
+    await _process_next_playlist_item(services, chat, message)
+
+
+async def _process_next_playlist_item(
+    services: Services,
+    chat: int,
+    message: Editable | None,
+) -> None:
+    """Fetch the next pending playlist job and start its download."""
+    job = await services.playlist.next_pending(chat)
+    if job is None:
+        if message is not None:
+            await _say(message, "Playlist finished.")
+        return
+
+    url, quality = job
+    await services.playlist.mark_running(url, quality)
+
+    # Reuse the single-video download logic by creating a temporary PendingVideo
+    from bot.services.flow import PendingVideo
+
+    # We need to describe the video again to get the menu for the quality label
+    description = await services.videos.describe_video(url)
+    option = next((opt for opt in description.menu.options if opt.format_id == quality), None)
+    if option is None:
+        await services.playlist.mark_failed(url, quality)
+        if message is not None:
+            await _say(message, f"Quality {quality} no longer available for {url}")
+        await _process_next_playlist_item(services, chat, message)
+        return
+
+    pending = PendingVideo(chat_id=chat, url=url, description=description, for_playlist=True)
+    if message is not None:
+        await _say(message, f"Playlist: starting {option.label}…", keyboard=cancel_keyboard())
+    else:
+        # Startup: no message to reply to, but we can log
+        logger.info("Playlist startup: starting %s for chat %s", option.label, chat)
+
+    async def _next() -> None:
+        await _process_next_playlist_item(services, chat, message)
+
+    await _download(
+        services,
+        pending=pending,
+        user_id=chat,  # fallback; delivery preference will be looked up
+        option=option,
+        message=message,
+        on_complete=_next,
+    )
+
+
 @requires_access
 async def on_quality_choice(update: Update, context: BotContext) -> None:
-    """Start the download the chosen button asked for."""
+    """Start the download the chosen button asked for, or queue it for a playlist."""
     services = services_from(context)
     query = update.callback_query
     chat = update.effective_chat
@@ -107,18 +200,35 @@ async def on_quality_choice(update: Update, context: BotContext) -> None:
         await _say(query.message, EXPIRED_MENU)
         return
 
-    await _say(query.message, f"Starting {option.label}…", keyboard=cancel_keyboard())
-    # The menu is spent before the download starts, not after it ends. A second press on
-    # the same button would otherwise start a second transfer for the same file, and both
-    # would clean up through one shared state entry.
-    services.flow.forget(chat.id)
-    await _download(
-        services,
-        pending=pending,
-        user_id=user.id,
-        option=option,
-        message=query.message,
-    )
+    if pending.for_playlist:
+        await _queue_playlist_item(services, chat.id, pending, option, query.message)
+    else:
+        await _say(query.message, f"Starting {option.label}…", keyboard=cancel_keyboard())
+        # The menu is spent before the download starts, not after it ends. A second press on
+        # the same button would otherwise start a second transfer for the same file, and both
+        # would clean up through one shared state entry.
+        services.flow.forget(chat.id)
+        await _download(
+            services,
+            pending=pending,
+            user_id=user.id,
+            option=option,
+            message=query.message,
+        )
+
+
+async def _queue_playlist_item(
+    services: Services,
+    chat: int,
+    pending: PendingVideo,
+    option: QualityOption,
+    message: Editable | None,
+) -> None:
+    """Queue one playlist item and ask for the next link."""
+    await services.playlist.queue(chat, pending.url, option.format_id)
+    await _say(message, f"Added {option.label} to playlist. Send another link, or 'done' to start.")
+    services.flow.forget(chat)
+    services.flow.expect_playlist_link(chat)
 
 
 @requires_access
@@ -154,8 +264,13 @@ async def _download(
     user_id: int,
     option: QualityOption,
     message: Editable | None,
+    on_complete: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
-    """Fetch one format, send it, and remove it whatever happens."""
+    """Fetch one format, send it, and remove it whatever happens.
+
+    If ``on_complete`` is given, it is awaited after the download finishes (success or
+    failure) and after cleanup. This allows chaining, e.g. for playlist processing.
+    """
     # Checked here, before anything is started, rather than by the downloader. A refusal
     # this late has already spent the user's wait and left a half-written file for the
     # janitor, and there is no point cancelling a transfer that should never have begun.
@@ -163,6 +278,8 @@ async def _download(
     if refusal is not None:
         logger.info("download refused for chat %s: the disk is full", pending.chat_id)
         await _say(message, str(refusal))
+        if on_complete is not None:
+            await on_complete()
         return
 
     cancel = services.flow.begin(pending.chat_id)
@@ -197,6 +314,8 @@ async def _download(
             # After the outcome has been reported, so a file that cannot be removed is
             # a leftover the janitor can see rather than one nobody hears about.
             await services.delivery.discard(path)
+        if on_complete is not None:
+            await on_complete()
 
 
 async def _send(

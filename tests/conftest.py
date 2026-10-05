@@ -14,7 +14,7 @@ from bot.config import Settings
 from bot.container import SERVICES_KEY, Services
 from bot.handlers import menu, single
 from bot.services.flow import Flow
-from tests.fakes import FakeDelivery, FakeDisk, FakeUsers, FakeVideos
+from tests.fakes import FakeDatabase, FakeDelivery, FakeDisk, FakePlaylist, FakeUsers, FakeVideos
 from tests.telegram_stub import RecordingTelegram
 
 if TYPE_CHECKING:
@@ -78,6 +78,8 @@ def services(settings: Settings) -> Services:
         delivery=FakeDelivery(),
         flow=Flow(),
         disk=FakeDisk(),
+        playlist=FakePlaylist(),
+        database=FakeDatabase(),
     )
 
 

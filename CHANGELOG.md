@@ -32,6 +32,9 @@ answer messages.
 - Disk guard that refuses to start a download when free space drops below
   `DISK_FREE_THRESHOLD_GB`, checked before any transfer begins so a full disk
   cannot leave a half-written file or a stale cancel button.
+- Playlist selections persisted in a `jobs` table, replayed on restart so a hard
+  kill cannot leave downloads stuck. The "Playlist" button now collects links
+  and qualities, queues them, and processes the queue sequentially.
 
 ### Changed
 

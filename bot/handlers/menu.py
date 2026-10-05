@@ -99,7 +99,15 @@ async def on_single_video(update: Update, context: BotContext) -> None:
 
 @requires_access
 async def on_playlist(update: Update, context: BotContext) -> None:
-    await _menu_reply(update, context, NOT_YET_TEXT)
+    services = services_from(context)
+    chat = update.effective_chat
+    message = update.effective_message
+    if chat is None or message is None:
+        return
+    services.flow.expect_playlist_link(chat.id)
+    await message.reply_text(
+        "Playlist mode. Send YouTube links one by one. When finished, send 'done'."
+    )
 
 
 @requires_access

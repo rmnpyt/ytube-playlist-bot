@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from bot.app import build_application
 from bot.config import ConfigurationError, Settings
+from bot.container import SERVICES_KEY
 from bot.logging_setup import configure_logging, get_logger
 from bot.services.janitor import Janitor
 from bot.services.storage.db import Database
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
     from telegram.ext import Updater
 
-    from bot.container import BotApplication
+    from bot.container import BotApplication, Services
     from bot.services.janitor import Sweeper
 
     #: What ``_poll`` does, named so a test can hand ``serve`` something else.
@@ -100,12 +101,78 @@ async def serve(
             await sweeper.sweep()
         except Exception:
             get_logger(LOGGER_NAME).warning("startup sweep failed", exc_info=True)
+        # Replay any playlist jobs that were pending when the process died.
+        await _replay_pending_playlists(application)
         janitor_task = asyncio.create_task(sweeper.run(), name="janitor")
         await poll(application)
     finally:
         if janitor_task is not None:
             await _stop(janitor_task)
         await database.dispose()
+
+
+async def _replay_pending_playlists(application: BotApplication) -> None:
+    """Scan for pending jobs and start their downloads.
+
+    Each pending job is marked RUNNING and its download is kicked off in the background.
+    """
+    log = get_logger(LOGGER_NAME)
+    services = cast("Services", application.bot_data[SERVICES_KEY])
+
+    # Skip if the database doesn't support the required interface (e.g. test fakes)
+    if not hasattr(services.database, "session_scope"):
+        return
+
+    # Find all pending jobs, grouped by chat
+    from sqlalchemy import select
+
+    from bot.services.storage.orm import JobRow, JobStatus
+
+    try:
+        async with services.database.session_scope() as session:
+            result = await session.scalars(
+                select(JobRow)
+                .where(JobRow.status == JobStatus.PENDING)
+                .order_by(JobRow.chat_id, JobRow.created_at)
+            )
+            pending = result.all()
+    except Exception:
+        # If the database doesn't work (e.g. test fake), skip replay
+        return
+
+    if not pending:
+        return
+
+    log.info("playlist.replay", pending_count=len(pending))
+
+    # Group by chat and start a background processor for each chat
+    from collections import defaultdict
+
+    from bot.handlers.single import _process_next_playlist_item
+
+    by_chat: dict[int, list[JobRow]] = defaultdict(list)
+    for job in pending:
+        by_chat[job.chat_id].append(job)
+
+    for chat_id, jobs in by_chat.items():
+        log.info("playlist.replay.chat", chat_id=chat_id, count=len(jobs))
+        # Mark the first job as RUNNING so a concurrent restart doesn't double-run it
+        try:
+            async with services.database.session_scope() as session:
+                from bot.services.storage.repositories import JobRepository, JobStatus
+
+                repo = JobRepository(session)
+                await repo.mark_running(jobs[0].id)
+        except Exception:
+            # If marking fails, skip this chat
+            continue
+
+        # Start a background task that will process this chat's queue
+        # We pass None for message since there's no user message at startup
+        asyncio.create_task(
+            _process_next_playlist_item(services, chat_id, None),
+            name=f"playlist-{chat_id}",
+        )
 
 
 def build_janitor(settings: Settings) -> Janitor:

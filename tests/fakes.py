@@ -18,6 +18,27 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bot.domain.errors import DiskSpaceError, DownloadCancelledError
+
+
+class FakeDatabase:
+    """A database stand-in for tests that don't need real persistence."""
+
+    def __init__(self) -> None:
+        self._disposed = False
+
+    @property
+    def sessions(self):
+        """Return None - tests don't use real sessions."""
+        return None
+
+    async def dispose(self) -> None:
+        self._disposed = True
+
+    @property
+    def disposed(self) -> bool:
+        return self._disposed
+
+
 from bot.domain.models import (
     DownloadProgress,
     QualityMenu,
@@ -25,7 +46,7 @@ from bot.domain.models import (
     VideoDescription,
     VideoMetadata,
 )
-from bot.domain.protocols import DiskRoom
+from bot.domain.protocols import DiskRoom, PlaylistService
 from bot.services.disk import NO_ROOM
 from bot.services.files import FileDelivery
 from bot.services.users import Sighting, UserService
@@ -152,9 +173,36 @@ class FakeDisk(DiskRoom):
         self.asked += 1
         if self.room:
             return None
-        # The real wording, so a test that asserts on what the user is told cannot pass
-        # against a message the production guard would never send.
         return DiskSpaceError(NO_ROOM)
+
+
+class FakePlaylist(PlaylistService):
+    """In-memory playlist for tests."""
+
+    def __init__(self) -> None:
+        self._queue: dict[int, list[tuple[str, str]]] = {}
+        self._running: set[tuple[str, str]] = set()
+        self._done: set[tuple[str, str]] = set()
+
+    async def queue(self, chat_id: int, url: str, quality: str) -> None:
+        self._queue.setdefault(chat_id, []).append((url, quality))
+
+    async def next_pending(self, chat_id: int) -> tuple[str, str] | None:
+        pending = self._queue.get(chat_id, [])
+        for item in pending:
+            if item not in self._running and item not in self._done:
+                return item
+        return None
+
+    async def mark_running(self, url: str, quality: str) -> None:
+        self._running.add((url, quality))
+
+    async def mark_done(self, url: str, quality: str) -> None:
+        self._done.add((url, quality))
+
+    async def mark_failed(self, url: str, quality: str) -> None:
+        # Failed items are NOT added to a set; they stay pending for retry
+        pass
 
 
 def a_description(

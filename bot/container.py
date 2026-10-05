@@ -13,11 +13,13 @@ from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from telegram.ext import Application, CallbackContext, ExtBot, JobQueue
+    from tests.fakes import FakeDatabase
 
     from bot.config import Settings
-    from bot.domain.protocols import DiskRoom, YoutubeService
+    from bot.domain.protocols import DiskRoom, PlaylistService, YoutubeService
     from bot.services.files import FileDelivery
     from bot.services.flow import Flow
+    from bot.services.storage.db import Database
     from bot.services.users import UserService
 
     #: The context type every handler here is written against.
@@ -58,6 +60,10 @@ class Services:
     #: Last, and checked before anything is written: the disk has to have room for a
     #: download before a download is started.
     disk: DiskRoom
+    #: Playlist queue — persists selections so a hard kill cannot leave jobs stuck.
+    playlist: PlaylistService
+    #: The database, for services that need direct access (e.g. playlist replay).
+    database: Database | FakeDatabase
 
 
 def services_from(context: BotContext) -> Services:

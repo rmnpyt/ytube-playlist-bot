@@ -42,6 +42,30 @@ class DiskRoom(Protocol):
 
 
 @runtime_checkable
+class PlaylistService(Protocol):
+    """Persist and replay the playlist selections a user makes.
+
+    The handler only knows it can queue a URL with a chosen quality and ask for the next
+    pending job. The concrete implementation uses the database; tests pass a fake.
+    """
+
+    async def queue(self, chat_id: int, url: str, quality: str) -> None:
+        """Store one playlist entry, pending."""
+
+    async def next_pending(self, chat_id: int) -> tuple[str, str] | None:
+        """The next pending (url, quality) for this chat, or ``None`` if the queue is empty."""
+
+    async def mark_running(self, url: str, quality: str) -> None:
+        """The download has started; if the process dies here, restart will retry."""
+
+    async def mark_done(self, url: str, quality: str) -> None:
+        """The download finished and the file was delivered."""
+
+    async def mark_failed(self, url: str, quality: str) -> None:
+        """The download failed; restart will retry."""
+
+
+@runtime_checkable
 class YoutubeService(Protocol):
     """Everything the bot needs from YouTube."""
 

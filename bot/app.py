@@ -27,6 +27,7 @@ from bot.logging_setup import get_logger
 from bot.services.disk import DiskGuard
 from bot.services.files import FileDelivery
 from bot.services.flow import Flow
+from bot.services.storage.jobs import DbPlaylistService
 from bot.services.users import UserService
 from bot.services.youtube.service import YtDlpService
 
@@ -96,6 +97,8 @@ def build_services(application: BotApplication, settings: Settings, database: Da
             settings.download_dir,
             threshold_gb=settings.disk_free_threshold_gb,
         ),
+        playlist=DbPlaylistService(database.sessions()),
+        database=database,
     )
 
 

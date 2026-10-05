@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from bot.services.storage.orm import UserRow
+from bot.services.storage.orm import JobRow, JobStatus, UserRow
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+__all__ = ["JobRepository", "JobStatus", "UserRepository"]
 
 
 class UserRepository:
@@ -60,3 +62,39 @@ class UserRepository:
             # the user, and would lose whatever a first sighting is meant to capture.
             raise LookupError(f"no record of user {telegram_id}")
         return user
+
+
+class JobRepository:
+    """Access to the ``jobs`` table."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, chat_id: int, url: str, quality: str) -> JobRow:
+        job = JobRow(chat_id=chat_id, url=url, quality=quality, status=JobStatus.PENDING)
+        self._session.add(job)
+        await self._session.flush()
+        return job
+
+    async def next_pending(self, chat_id: int) -> JobRow | None:
+        result = await self._session.scalars(
+            select(JobRow)
+            .where(JobRow.chat_id == chat_id, JobRow.status == JobStatus.PENDING)
+            .order_by(JobRow.created_at)
+            .limit(1)
+        )
+        return result.first()
+
+    async def set_status(self, job_id: int, status: str) -> None:
+        job = await self._session.get(JobRow, job_id)
+        if job is not None:
+            job.status = status
+
+    async def mark_running(self, job_id: int) -> None:
+        await self.set_status(job_id, JobStatus.RUNNING)
+
+    async def mark_done(self, job_id: int) -> None:
+        await self.set_status(job_id, JobStatus.DONE)
+
+    async def mark_failed(self, job_id: int) -> None:
+        await self.set_status(job_id, JobStatus.FAILED)

@@ -42,3 +42,31 @@ class UserRow(Base):
 
     def __repr__(self) -> str:
         return f"UserRow(telegram_id={self.telegram_id!r}, send_as_video={self.send_as_video!r})"
+
+
+class JobStatus:
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class JobRow(Base):
+    """One playlist entry waiting to be downloaded."""
+
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    url: Mapped[str] = mapped_column(String(512), nullable=False)
+    quality: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default=JobStatus.PENDING)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    def __repr__(self) -> str:
+        return f"JobRow(id={self.id!r}, chat_id={self.chat_id!r}, status={self.status!r})"

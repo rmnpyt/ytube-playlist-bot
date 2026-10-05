@@ -32,6 +32,7 @@ class PendingVideo:
     chat_id: int
     url: str
     description: VideoDescription
+    for_playlist: bool = False
 
     @property
     def menu(self) -> QualityMenu:
@@ -44,6 +45,7 @@ class Flow:
 
     def __init__(self) -> None:
         self._awaiting_link: set[int] = set()
+        self._awaiting_playlist_link: set[int] = set()
         self._pending: dict[int, PendingVideo] = {}
         self._cancels: dict[int, asyncio.Event] = {}
 
@@ -58,6 +60,18 @@ class Flow:
 
     def stop_expecting_link(self, chat_id: int) -> None:
         self._awaiting_link.discard(chat_id)
+
+    # -- Awaiting a playlist link ------------------------------------------ #
+
+    def expect_playlist_link(self, chat_id: int) -> None:
+        """The user is building a playlist and owes us the next URL."""
+        self._awaiting_playlist_link.add(chat_id)
+
+    def expecting_playlist_link(self, chat_id: int) -> bool:
+        return chat_id in self._awaiting_playlist_link
+
+    def stop_expecting_playlist_link(self, chat_id: int) -> None:
+        self._awaiting_playlist_link.discard(chat_id)
 
     # -- A video waiting for a choice -------------------------------------- #
 

@@ -144,14 +144,15 @@ async def test_a_nobody_wants_the_admin_button(
     assert telegram.said == ["This bot is by invitation. Ask one of its admins for access."]
 
 
-async def test_the_playlist_button_says_it_is_not_ready_yet(
+async def test_the_playlist_button_starts_playlist_mode(
     application: BotApplication,
     telegram: RecordingTelegram,
     services: Services,
 ) -> None:
     await send(application, services, a_text_update(PLAYLIST_LABEL))
 
-    assert "isn't finished yet" in telegram.said[-1]
+    assert "Playlist mode" in telegram.said[-1]
+    assert "Send YouTube links" in telegram.said[-1]
 
 
 async def test_stray_text_is_handed_back_to_the_menu(
