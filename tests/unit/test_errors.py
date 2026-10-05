@@ -50,3 +50,13 @@ def test_too_large_errors_name_the_largest_offender() -> None:
     error = errors.AllOptionsTooLargeError(largest_bytes=2_400_000_000, limit_bytes=2_000_000_000)
 
     assert error.largest_bytes > error.limit_bytes
+
+
+def test_too_large_errors_are_readable_by_the_user_they_stop() -> None:
+    # Both figures in the units MAX_UPLOAD_MB is set in. "2400000000 bytes" is the same
+    # fact, and no user reads it.
+    error = errors.AllOptionsTooLargeError(largest_bytes=2_400_000_000, limit_bytes=2_000_000_000)
+
+    assert str(error) == (
+        "the smallest available quality is 2.4 GB, still over the 2.0 GB upload limit"
+    )

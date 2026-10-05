@@ -9,18 +9,19 @@ running inside a cancelled frame.
 from __future__ import annotations
 
 from bot.domain.models import QualityMenu, QualityOption, VideoDescription, VideoMetadata
-from bot.services.flow import Flow, PendingDownload
+from bot.services.flow import Flow, PendingVideo
 
 CHAT = 7
+URL = "https://youtu.be/abc"
 
 
-def a_pending(chat_id: int = CHAT) -> PendingDownload:
+def a_pending(chat_id: int = CHAT) -> PendingVideo:
     option = QualityOption(format_id="22", height=720, size_bytes=1_000)
     description = VideoDescription(
         metadata=VideoMetadata(video_id="abc", title="A"),
         menu=QualityMenu(options=(option,)),
     )
-    return PendingDownload(chat_id=chat_id, description=description, option=option)
+    return PendingVideo(chat_id=chat_id, url=URL, description=description)
 
 
 def test_a_chat_awaits_nothing_until_it_asks() -> None:
@@ -52,7 +53,9 @@ def test_waiting_can_stop_without_remembering_how() -> None:
     assert flow.expecting_link(CHAT) is False
 
 
-def test_a_shown_video_can_be_recalled() -> None:
+def test_a_shown_video_can_be_recalled_with_the_link_that_produced_it() -> None:
+    # The download needs a URL, not just a format id, and it has to be the one the
+    # description was built from.
     flow = Flow()
     pending = a_pending()
 
@@ -77,7 +80,7 @@ def test_a_new_description_replaces_the_previous_one() -> None:
     # A user who starts again should see the new video's qualities, not the old one's.
     flow = Flow()
     flow.remember(a_pending())
-    flow.remember(a_pending(chat_id=CHAT))
+    flow.remember(a_pending())
 
     assert flow.recall(CHAT) is not None
 

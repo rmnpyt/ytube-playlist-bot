@@ -8,6 +8,8 @@ apology, because "Traceback" in a chat is never the helpful answer.
 
 from __future__ import annotations
 
+from bot.domain.formatting import format_size
+
 
 class BotError(Exception):
     """A failure with a message the user can be shown unchanged."""
@@ -47,8 +49,8 @@ class AllOptionsTooLargeError(BotError):
 
     def __init__(self, largest_bytes: int, limit_bytes: int) -> None:
         super().__init__(
-            f"the largest available quality is {largest_bytes} bytes, "
-            f"over the {limit_bytes} byte upload limit"
+            f"the smallest available quality is {format_size(largest_bytes)}, "
+            f"still over the {format_size(limit_bytes)} upload limit"
         )
         self.largest_bytes = largest_bytes
         self.limit_bytes = limit_bytes

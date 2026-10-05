@@ -18,16 +18,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bot.domain.models import QualityOption, VideoDescription
+    from bot.domain.models import QualityMenu, VideoDescription
 
 
 @dataclass(frozen=True, slots=True)
-class PendingDownload:
-    """A video the user has been shown and not yet chosen from."""
+class PendingVideo:
+    """A video that has been described and shown, waiting for a quality to be chosen.
+
+    The quality is not part of this: it is decided when the button is pressed, and
+    storing it here would mean remembering a choice the user has not made yet.
+    """
 
     chat_id: int
+    url: str
     description: VideoDescription
-    option: QualityOption
+
+    @property
+    def menu(self) -> QualityMenu:
+        """The qualities that were offered, for looking up a pressed button."""
+        return self.description.menu
 
 
 class Flow:
@@ -35,7 +44,7 @@ class Flow:
 
     def __init__(self) -> None:
         self._awaiting_link: set[int] = set()
-        self._pending: dict[int, PendingDownload] = {}
+        self._pending: dict[int, PendingVideo] = {}
         self._cancels: dict[int, asyncio.Event] = {}
 
     # -- Awaiting a link --------------------------------------------------- #
@@ -52,10 +61,10 @@ class Flow:
 
     # -- A video waiting for a choice -------------------------------------- #
 
-    def remember(self, pending: PendingDownload) -> None:
+    def remember(self, pending: PendingVideo) -> None:
         self._pending[pending.chat_id] = pending
 
-    def recall(self, chat_id: int) -> PendingDownload | None:
+    def recall(self, chat_id: int) -> PendingVideo | None:
         return self._pending.get(chat_id)
 
     def forget(self, chat_id: int) -> None:

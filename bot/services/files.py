@@ -26,12 +26,17 @@ class SupportsSending(Protocol):
 
     Narrowed to two methods so the delivery rules can be tested without a Telegram
     connection, and so a future change to the library's surface shows up here first.
+
+    ``caption`` is keyword-only, which is how it is always passed. Telegram's own methods
+    put ``duration`` in the third positional slot, so a positional ``caption`` here would
+    be a caption that silently became a duration.
     """
 
     async def send_video(
         self,
         chat_id: int,
         video: Path,
+        *,
         caption: str | None = None,
     ) -> object: ...
 
@@ -39,6 +44,7 @@ class SupportsSending(Protocol):
         self,
         chat_id: int,
         document: Path,
+        *,
         caption: str | None = None,
     ) -> object: ...
 
