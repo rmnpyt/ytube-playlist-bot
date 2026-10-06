@@ -1,0 +1,63 @@
+> """Rendering of numbers a user reads.
+  
+> Decimal units throughout, because that is the unit ``MAX_UPLOAD_MB`` is expressed
+> in and the Bot API server's 2000 MB limit is decimal too. Mixing decimal sizes with
+> binary ones produces a menu that says a 2 GB video is too large for a 2 GB limit.
+  
+> Anything unknown renders as an explicit placeholder. A guessed duration or a
+> negative ETA looks like a real measurement, and a user cannot tell the difference.
+> """
+  
+> from __future__ import annotations
+  
+> from typing import Final
+  
+> KILO: Final = 1_000
+> MEGA: Final = 1_000_000
+> GIGA: Final = 1_000_000_000
+> TERA: Final = 1_000_000_000_000
+  
+> UNKNOWN_ETA: Final = "--:--"
+> UNKNOWN_SPEED: Final = "-- MB/s"
+  
+  
+> def format_size(size_bytes: int | None) -> str:
+>     """Render a byte count with one decimal, or exactly for bytes."""
+!     if size_bytes is None:
+!         return "unknown size"
+!     if size_bytes < KILO:
+!         return f"{size_bytes} B"
+!     if size_bytes < MEGA:
+!         return f"{size_bytes / KILO:.1f} KB"
+!     if size_bytes < GIGA:
+!         return f"{size_bytes / MEGA:.1f} MB"
+!     if size_bytes < TERA:
+!         return f"{size_bytes / GIGA:.1f} GB"
+!     return f"{size_bytes / TERA:.2f} TB"
+  
+  
+> def format_duration(seconds: int | None) -> str:
+>     """Render seconds as ``m:ss``, or ``h:mm:ss`` past an hour."""
+!     if seconds is None:
+!         return "unknown length"
+!     seconds = max(seconds, 0)
+!     hours, remainder = divmod(seconds, 3600)
+!     minutes, secs = divmod(remainder, 60)
+!     if hours:
+!         return f"{hours}:{minutes:02d}:{secs:02d}"
+!     return f"{minutes}:{secs:02d}"
+  
+  
+> def format_eta(seconds: int | None) -> str:
+>     """Render a remaining-time estimate, refusing to show a nonsensical one."""
+!     if seconds is None or seconds < 0:
+!         return UNKNOWN_ETA
+!     minutes, secs = divmod(seconds, 60)
+!     return f"{minutes:02d}:{secs:02d}"
+  
+  
+> def format_speed(bytes_per_second: float | None) -> str:
+>     """Render a transfer rate in MB/s, since that is the interesting magnitude."""
+!     if bytes_per_second is None:
+!         return UNKNOWN_SPEED
+!     return f"{bytes_per_second / MEGA:.1f} MB/s"

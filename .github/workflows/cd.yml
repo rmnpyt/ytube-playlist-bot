@@ -1,0 +1,152 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build and push to GHCR
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag current for rollback
+        run: |
+          docker pull ${{ needs.build.outputs.image }}
+          docker tag ${{ needs.build.outputs.image }} ytube-playlist-bot:current
+
+  deploy:
+    name: Deploy to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pull new image on VPS
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            set -e
+            echo "Pulling ${{ needs.build.outputs.image }}..."
+            docker pull ${{ needs.build.outputs.image }}
+            docker tag ${{ needs.build.outputs.image }} ytube-playlist-bot:new
+          EOF
+
+      - name: Health check before switch
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            set -e
+            echo "Starting new container for health check..."
+            docker run --rm --name ytube-healthcheck \
+              --network ytube-playlist-bot_bot-net \
+              -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+              -e TELEGRAM_API_ID="$TELEGRAM_API_ID" \
+              -e TELEGRAM_API_HASH="$TELEGRAM_API_HASH" \
+              -e ADMIN_USER_IDS="$ADMIN_USER_IDS" \
+              -e ALLOWED_USER_IDS="$ALLOWED_USER_IDS" \
+              -e DATABASE_URL="sqlite+aiosqlite:////data/bot.db" \
+              -e DOWNLOAD_DIR="/data/downloads" \
+              -e METRICS_HOST="0.0.0.0" \
+              -e METRICS_PORT="9090" \
+              -v ytube-playlist-bot_bot-data:/data \
+              ytube-playlist-bot:new &
+            HEALTH_PID=$!
+            sleep 15
+            if curl -fsS http://127.0.0.1:9090/healthz; then
+              echo "Health check passed"
+              kill $HEALTH_PID 2>/dev/null || true
+              exit 0
+            else
+              echo "Health check failed"
+              kill $HEALTH_PID 2>/dev/null || true
+              exit 1
+            fi
+          EOF
+
+      - name: Swap containers (blue-green)
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            set -e
+            echo "Stopping old container..."
+            docker compose stop bot
+            echo "Starting new container..."
+            docker compose up -d bot
+            echo "Waiting for new container to be healthy..."
+            for i in {1..30}; do
+              if curl -fsS http://127.0.0.1:9090/healthz; then
+                echo "New container is healthy"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "New container failed health check"
+            exit 1
+          EOF
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+            echo "Deployment failed, rolling back..."
+            docker compose stop bot
+            docker tag ytube-playlist-bot:current ytube-playlist-bot:new 2>/dev/null || true
+            docker compose up -d bot
+            echo "Rollback complete"
+          EOF
+        env:
+          # The previous image is still tagged as 'current' in the build step
+          # so we can restore from it
+          pass

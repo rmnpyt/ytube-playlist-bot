@@ -1,0 +1,62 @@
+> """Inline keyboards attached to the messages the bot sends while working.
+  
+> Callback data is kept short and namespaced because Telegram caps it at 64 bytes: the
+> quality buttons carry only the format id, which is all the handler needs to start a
+> download, and the cancel button is a single fixed word.
+> """
+  
+> from __future__ import annotations
+  
+> from typing import TYPE_CHECKING
+  
+> from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+  
+- if TYPE_CHECKING:
+-     from bot.domain.models import VideoDescription
+-     from bot.services.users import User
+  
+> QUALITY_PREFIX = "quality:"
+> CANCEL_CALLBACK = "cancel"
+> ACCESS_APPROVE_PREFIX = "access_approve:"
+> ACCESS_DENY_PREFIX = "access_deny:"
+  
+  
+> def quality_keyboard(description: VideoDescription) -> InlineKeyboardMarkup:
+!     buttons = [
+!         InlineKeyboardButton(option.label, callback_data=f"{QUALITY_PREFIX}{option.format_id}")
+!         for option in description.menu.options
+!     ]
+!     return InlineKeyboardMarkup([[button] for button in buttons])
+  
+  
+> def cancel_keyboard() -> InlineKeyboardMarkup:
+!     return InlineKeyboardMarkup(
+!         [[InlineKeyboardButton("✖ Cancel", callback_data=CANCEL_CALLBACK)]],
+!     )
+  
+  
+> def admin_panel_keyboard(pending: list[User]) -> InlineKeyboardMarkup:
+>     """Keyboard for the admin panel showing approve/deny buttons per request."""
+!     buttons = []
+!     for u in pending:
+!         name = f"@{u.username}" if u.username else f"ID {u.telegram_id}"
+!         buttons.append(
+!             [
+!                 InlineKeyboardButton(
+!                     f"✅ Approve {name}", callback_data=f"{ACCESS_APPROVE_PREFIX}{u.telegram_id}"
+!                 ),
+!                 InlineKeyboardButton(
+!                     f"❌ Deny {name}", callback_data=f"{ACCESS_DENY_PREFIX}{u.telegram_id}"
+!                 ),
+!             ]
+!         )
+!     return InlineKeyboardMarkup(buttons)
+  
+  
+> def quality_menu_text(description: VideoDescription) -> str:
+>     """The message the quality buttons sit under."""
+!     lines = [description.metadata.caption, "", "Pick a quality:"]
+!     note = description.menu.removal_note
+!     if note:
+!         lines.extend(("", note))
+!     return "\n".join(lines)

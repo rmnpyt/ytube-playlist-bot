@@ -1,0 +1,89 @@
+"""Metrics and health endpoints for the bot.
+
+A small aiohttp server that runs alongside the Telegram bot polling. It exposes:
+
+* ``GET /healthz`` — liveness probe, returns 200 if the process is alive.
+* ``GET /metrics`` — Prometheus-compatible metrics (counters, gauges, histograms).
+
+The server binds to ``METRICS_HOST:METRICS_PORT`` from settings and runs in the same
+event loop as the Telegram bot, so it shares the loop's lifetime.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
+
+from aiohttp import web
+
+if TYPE_CHECKING:
+    from bot.config import Settings
+
+LOGGER_NAME = "bot.metrics"
+
+
+@asynccontextmanager
+async def metrics_server(settings: Settings) -> AsyncIterator[web.AppRunner]:
+    """Run the metrics HTTP server as a context manager.
+
+    Yields the runner so the caller can wait on it, or the caller can just let the
+    context manager handle the lifetime.
+
+    Usage::
+
+        async with metrics_server(settings):
+            await bot.poll()
+
+    The server is automatically cleaned up on exit.
+    """
+    app = _build_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, settings.metrics_host, settings.metrics_port)
+    await site.start()
+    try:
+        yield runner
+    finally:
+        await runner.cleanup()
+
+
+def _build_app() -> web.Application:
+    """Build the aiohttp application with health and metrics routes."""
+    app = web.Application()
+    app.router.add_get("/healthz", _healthz)
+    app.router.add_get("/metrics", _metrics)
+    return app
+
+
+async def _healthz(_request: web.Request) -> web.Response:
+    """Liveness probe. Always returns 200 if the server is reachable."""
+    return web.Response(text="OK", status=200)
+
+
+async def _metrics(_request: web.Request) -> web.Response:
+    """Prometheus-compatible metrics endpoint.
+
+    For now this returns a minimal set of metrics. Extend as needed.
+    """
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+    output = generate_latest()
+    # CONTENT_TYPE_LATEST includes charset; aiohttp wants just the media type
+    media_type = CONTENT_TYPE_LATEST.split(";")[0]
+    return web.Response(body=output, content_type=media_type)
+
+
+async def _run_server_directly(settings: Settings) -> None:
+    """Run the server without the context manager, for standalone use."""
+    async with metrics_server(settings):
+        await asyncio.Event().wait()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    # Allow running the metrics server standalone for testing  # pragma: no cover
+    from bot.config import Settings  # pragma: no cover
+
+    s = Settings.from_env()  # pragma: no cover
+    asyncio.run(_run_server_directly(s))  # pragma: no cover

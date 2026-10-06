@@ -1,0 +1,167 @@
+> """Structured logging with a hard guarantee that secrets never get through.
+  
+> The contract forbids a token, hash or cookie reaching stdout or stderr. That is
+> enforced in one place, as a structlog processor, so no call site has to remember
+> to be careful.
+> """
+  
+! from __future__ import annotations
+  
+! import logging
+! import sys
+! from collections.abc import Iterable, Mapping
+! from typing import TYPE_CHECKING, Any, Final, Protocol
+  
+! import structlog
+  
+- if TYPE_CHECKING:
+-     from structlog.types import EventDict, Processor, WrappedLogger
+  
+  
+! class Logger(Protocol):
+!     """The subset of the structlog logger API this project uses.
+  
+!     ``structlog.get_logger`` returns a lazy proxy from a private module, so it has no
+!     public type worth annotating against. Declaring the surface we actually call keeps
+!     call sites type-checked without importing internals.
+!     """
+  
+!     def debug(self, event: str, **kwargs: Any) -> Any:
+!         """Log at debug level."""
+  
+!     def info(self, event: str, **kwargs: Any) -> Any:
+!         """Log at info level."""
+  
+!     def warning(self, event: str, **kwargs: Any) -> Any:
+!         """Log at warning level."""
+  
+!     def error(self, event: str, **kwargs: Any) -> Any:
+!         """Log at error level."""
+  
+!     def exception(self, event: str, **kwargs: Any) -> Any:
+!         """Log at error level including the active exception."""
+  
+!     def bind(self, **kwargs: Any) -> Logger:
+!         """Return a logger with additional permanent context."""
+  
+  
+! REDACTED: Final[str] = "[redacted]"
+  
+  #: Substrings that mark a key as sensitive. Matched case-insensitively.
+! SECRET_KEY_PARTS: Final[tuple[str, ...]] = (
+!     "api_hash",
+!     "apihash",
+!     "authorization",
+!     "cookie",
+!     "credential",
+!     "password",
+!     "passwd",
+!     "private_key",
+!     "secret",
+!     "token",
+! )
+  
+  #: Values shorter than this are never masked in free text, otherwise a short secret
+  #: would black out unrelated words that happen to contain it.
+! MIN_REDACTABLE_LENGTH: Final[int] = 6
+  
+  
+! def _is_secret_key(key: object) -> bool:
+!     if not isinstance(key, str):
+!         return False
+!     lowered = key.lower()
+!     return any(part in lowered for part in SECRET_KEY_PARTS)
+  
+  
+! def _scrub_text(text: str, secret_values: frozenset[str]) -> str:
+!     for value in secret_values:
+!         if len(value) >= MIN_REDACTABLE_LENGTH:
+!             text = text.replace(value, REDACTED)
+!     return text
+  
+  
+! def _scrub(value: Any, secret_values: frozenset[str]) -> Any:
+!     if isinstance(value, str):
+!         return _scrub_text(value, secret_values)
+!     if isinstance(value, Mapping):
+!         return {
+!             key: REDACTED if _is_secret_key(key) else _scrub(item, secret_values)
+!             for key, item in value.items()
+!         }
+!     if isinstance(value, list | tuple):
+!         return [_scrub(item, secret_values) for item in value]
+!     return value
+  
+  
+! def redact_secrets(
+!     event: dict[str, Any], secret_values: frozenset[str] = frozenset()
+! ) -> dict[str, Any]:
+!     """Return a copy of ``event`` with secrets masked.
+  
+!     Two independent strategies are applied, because either one alone has a gap:
+!     keys whose name looks sensitive are masked wholesale, and known secret values are
+!     masked wherever they appear, including inside ordinary messages.
+!     """
+!     return {
+!         key: REDACTED if _is_secret_key(key) else _scrub(item, secret_values)
+!         for key, item in event.items()
+!     }
+  
+  
+! def _redaction_processor(secret_values: frozenset[str]) -> Processor:
+!     def processor(
+!         _logger: WrappedLogger, _method_name: str, event_dict: EventDict
+!     ) -> dict[str, Any]:
+!         return redact_secrets(dict(event_dict), secret_values)
+  
+!     return processor
+  
+  
+! def configure_logging(
+!     *,
+!     level: str,
+!     json_output: bool,
+!     secret_values: Iterable[str] = (),
+! ) -> None:
+!     """Install structlog and stdlib logging configuration.
+  
+!     Safe to call more than once: handlers are replaced rather than appended, so a
+!     second call never duplicates output.
+!     """
+!     secrets = frozenset(value for value in secret_values if value)
+!     numeric_level = getattr(logging, level.upper(), logging.INFO)
+  
+!     renderer: Processor = (
+!         structlog.processors.JSONRenderer(sort_keys=True)
+!         if json_output
+!         else structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
+!     )
+  
+!     structlog.configure(
+!         processors=[
+!             structlog.contextvars.merge_contextvars,
+!             structlog.stdlib.add_log_level,
+!             structlog.stdlib.add_logger_name,
+!             structlog.processors.TimeStamper(fmt="iso", utc=True),
+!             structlog.processors.StackInfoRenderer(),
+!             structlog.processors.format_exc_info,
+!             _redaction_processor(secrets),
+!             renderer,
+!         ],
+!         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
+!         logger_factory=structlog.stdlib.LoggerFactory(),
+!         cache_logger_on_first_use=False,
+!     )
+  
+!     logging.basicConfig(
+!         format="%(message)s",
+!         stream=sys.stdout,
+!         level=numeric_level,
+!         force=True,
+!     )
+  
+  
+! def get_logger(name: str) -> Logger:
+!     """Return a structlog logger bound to ``name``."""
+!     logger: Logger = structlog.stdlib.get_logger(name)
+!     return logger

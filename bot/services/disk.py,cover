@@ -1,0 +1,110 @@
+> """Whether there is room on the disk to start one more download.
+  
+> The upload ceiling and the disk are different limits, and only one of them is checked when
+> a menu is built. ``MAX_UPLOAD_MB`` says how large a file Telegram will take; it says nothing
+> about how much room is left on the volume. A 1.9 GB file on a disk with 200 MB free passes
+> every check the menu makes and then fails halfway through, and by then the damage is done:
+> SQLite cannot write, the local Bot API server cannot write its media, and the container may
+> not come back up at all.
+  
+> So the guard refuses to start a download that has nowhere to land, and says so in words the
+> user can act on, which in this case means waiting.
+> """
+  
+> from __future__ import annotations
+  
+> import asyncio
+> import logging
+> import shutil
+> from typing import TYPE_CHECKING, Protocol, cast
+  
+> from bot.domain.errors import DiskSpaceError
+> from bot.domain.formatting import GIGA, format_size
+  
+- if TYPE_CHECKING:
+-     from collections.abc import Callable
+-     from pathlib import Path
+  
+> logger = logging.getLogger(__name__)
+  
+  
+> def _default_usage(path: Path) -> FreeSpace:
+>     """``shutil.disk_usage`` has a private return type; this wrapper satisfies the Protocol."""
+!     return cast("FreeSpace", shutil.disk_usage(path))
+  
+  
+> class FreeSpace(Protocol):
+>     """The one number taken from ``shutil.disk_usage``.
+  
+>     Narrower than the named tuple it comes from, because ``total`` and ``used`` are not
+>     consulted and a seam should say which of them the guard actually reads.
+>     """
+  
+>     free: int
+  
+  
+  #: What a refusal says. No numbers: the user cannot act on them and they change on every
+  #: attempt, so they belong in the log where the threshold that produced them is written.
+> NO_ROOM = "The server has run out of disk space, so downloads are paused for now. Try again later."
+  
+  
+> class DiskGuard:
+>     """Asks the filesystem how much room is left, and refuses when there is too little."""
+  
+>     def __init__(
+>         self,
+>         directory: Path,
+>         *,
+>         threshold_gb: float,
+>         usage: Callable[[Path], FreeSpace] | None = None,
+>     ) -> None:
+>         """
+>         ``usage`` exists so the comparison can be tested against a number instead of
+>         against whichever disk the suite happens to run on. It defaults to the real thing.
+>         """
+!         self._directory = directory
+!         self._threshold_bytes = int(threshold_gb * GIGA)
+!         self._usage: Callable[[Path], FreeSpace] = usage if usage is not None else _default_usage
+  
+>     async def has_room(self) -> bool:
+>         """Whether a download may start. Never raises.
+  
+>         A measurement that fails is treated as room to proceed. The alternative is refusing
+>         every download because a stat did, which is indistinguishable from the guard working
+>         as intended, and yt-dlp's own failure is a far better message than a guess.
+>         """
+!         free = await self._free_bytes()
+!         if free is None:
+!             return True
+!         return free > self._threshold_bytes
+  
+>     async def check(self) -> DiskSpaceError | None:
+>         """The refusal to show the user, or ``None`` when there is room.
+  
+>         The free space and the threshold are both in the message: it is the one line an
+>         operator reads in a chat screenshot, and "disk" on its own sends them looking in
+>         the wrong place.
+>         """
+!         free = await self._free_bytes()
+!         if free is None or free > self._threshold_bytes:
+!             return None
+!         logger.warning(
+!             "refusing a download: %s free, %s required",
+!             format_size(free),
+!             format_size(self._threshold_bytes),
+!         )
+!         return DiskSpaceError(
+!             f"{NO_ROOM} ({format_size(free)} free, {format_size(self._threshold_bytes)} wanted)"
+!         )
+  
+>     async def _free_bytes(self) -> int | None:
+!         try:
+!             return await asyncio.to_thread(self._measure)
+!         except OSError:
+!             logger.warning("could not measure the free space on %s", self._directory, exc_info=True)
+!             return None
+  
+>     def _measure(self) -> int:
+          # The volume, not the directory: the directory is where downloads land, but the room
+          # belongs to the filesystem they land on.
+!         return self._usage(self._directory).free
